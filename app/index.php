@@ -97,7 +97,7 @@ function psst_public_secret_matches(array $share, string $secretCode, bool $reco
 	return false;
 }
 
-function psst_render_iti_response(array $share): never
+function psst_render_iti_response(array $share)
 {
 	$secretCode = (string) ($_GET['_secretCode'] ?? '');
 	$valid = !empty($share['iti_secret_code']) && hash_equals((string) $share['iti_secret_code'], $secretCode);
@@ -129,7 +129,7 @@ function psst_render_iti_response(array $share): never
 	exit;
 }
 
-function psst_render_plain_share(array $share): never
+function psst_render_plain_share(array $share)
 {
 	if ($share['type'] === 'link') {
 		header('Location: ' . $share['content'], true, 302);
@@ -145,7 +145,7 @@ function psst_render_plain_share(array $share): never
 	exit;
 }
 
-function psst_send_file(array $share, bool $asAttachment): never
+function psst_send_file(array $share, bool $asAttachment)
 {
 	if (empty($share['stored_filename'])) {
 		psst_render_message('File not found', 'This share has no stored file.', 404);
@@ -165,7 +165,7 @@ function psst_send_file(array $share, bool $asAttachment): never
 	exit;
 }
 
-function psst_render_secret_prompt(array $share): never
+function psst_render_secret_prompt(array $share)
 {
 	$hasError = psst_method() === 'POST';
 	$title = $share['title'] !== '' ? $share['title'] : 'Protected Share';
@@ -198,7 +198,7 @@ function psst_render_secret_prompt(array $share): never
 	exit;
 }
 
-function psst_render_encrypted_share(array $share): never
+function psst_render_encrypted_share(array $share)
 {
 	$publicShare = psst_public_share($share);
 	header('Content-Type: text/html; charset=utf-8');
@@ -232,7 +232,7 @@ function psst_render_encrypted_share(array $share): never
 	exit;
 }
 
-function psst_render_message(string $title, string $message, int $statusCode): never
+function psst_render_message(string $title, string $message, int $statusCode)
 {
 	http_response_code($statusCode);
 	header('Content-Type: text/html; charset=utf-8');

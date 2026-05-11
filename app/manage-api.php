@@ -9,22 +9,39 @@ try {
 
     $action = $_GET['action'] ?? '';
 
-    match ($action) {
-        'status' => psst_api_status(),
-        'login' => psst_api_login(),
-        'logout' => psst_api_logout(),
-        'shares' => psst_api_shares(),
-        'share' => psst_api_share(),
-        'create' => psst_api_create_share(),
-        'update' => psst_api_update_share(),
-        'delete' => psst_api_delete_share(),
-        default => psst_json(['error' => 'Unknown action.'], 404),
-    };
+    switch ($action) {
+        case 'status':
+            psst_api_status();
+            break;
+        case 'login':
+            psst_api_login();
+            break;
+        case 'logout':
+            psst_api_logout();
+            break;
+        case 'shares':
+            psst_api_shares();
+            break;
+        case 'share':
+            psst_api_share();
+            break;
+        case 'create':
+            psst_api_create_share();
+            break;
+        case 'update':
+            psst_api_update_share();
+            break;
+        case 'delete':
+            psst_api_delete_share();
+            break;
+        default:
+            psst_json(['error' => 'Unknown action.'], 404);
+    }
 } catch (Throwable $exception) {
     psst_json(['error' => 'Server error.', 'detail' => $exception->getMessage()], 500);
 }
 
-function psst_api_status(): never
+function psst_api_status()
 {
     psst_json([
         'authenticated' => psst_is_logged_in(),
@@ -33,7 +50,7 @@ function psst_api_status(): never
     ]);
 }
 
-function psst_api_login(): never
+function psst_api_login()
 {
     if (psst_method() !== 'POST') {
         psst_json(['error' => 'Method not allowed.'], 405);
@@ -58,7 +75,7 @@ function psst_api_login(): never
     psst_json(['error' => 'Invalid credentials.'], 401);
 }
 
-function psst_api_logout(): never
+function psst_api_logout()
 {
     if (psst_method() !== 'POST') {
         psst_json(['error' => 'Method not allowed.'], 405);
@@ -68,7 +85,7 @@ function psst_api_logout(): never
     psst_json(['authenticated' => false]);
 }
 
-function psst_api_shares(): never
+function psst_api_shares()
 {
     psst_require_login();
 
@@ -79,7 +96,7 @@ function psst_api_shares(): never
     psst_json(['shares' => array_map('psst_manager_share', psst_share_list())]);
 }
 
-function psst_api_share(): never
+function psst_api_share()
 {
     psst_require_login();
 
@@ -92,7 +109,7 @@ function psst_api_share(): never
     psst_json(['share' => psst_manager_share($share)]);
 }
 
-function psst_api_create_share(): never
+function psst_api_create_share()
 {
     psst_require_login();
 
@@ -106,7 +123,7 @@ function psst_api_create_share(): never
     psst_json(['share' => psst_manager_share($created)], 201);
 }
 
-function psst_api_update_share(): never
+function psst_api_update_share()
 {
     psst_require_login();
 
@@ -133,7 +150,7 @@ function psst_api_update_share(): never
     psst_json(['share' => psst_manager_share($updated)]);
 }
 
-function psst_api_delete_share(): never
+function psst_api_delete_share()
 {
     psst_require_login();
 

@@ -20,7 +20,7 @@ function psst_start_session(): void
     }
 }
 
-function psst_json(array $payload, int $statusCode = 200): never
+function psst_json(array $payload, int $statusCode = 200)
 {
     http_response_code($statusCode);
     header('Content-Type: application/json; charset=utf-8');
@@ -28,7 +28,7 @@ function psst_json(array $payload, int $statusCode = 200): never
     exit;
 }
 
-function psst_empty_response(int $statusCode): never
+function psst_empty_response(int $statusCode)
 {
     http_response_code($statusCode);
     exit;
