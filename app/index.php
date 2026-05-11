@@ -169,7 +169,9 @@ function psst_send_file(array $share, bool $asAttachment)
 		psst_render_message('File not found', 'The stored file is missing.', 404);
 	}
 
-	$filename = $share['original_filename'] ?: 'share-file';
+	$filename = ($_GET['iti_pdf'] ?? '') === '1'
+		? $share['uuid'] . '.pdf'
+		: ($share['original_filename'] ?: 'share-file');
 	header('Content-Type: ' . ($share['mime_type'] ?: 'application/octet-stream'));
 	header('Content-Length: ' . filesize($path));
 	header('Content-Disposition: ' . ($asAttachment ? 'attachment' : 'inline') . '; filename="' . addcslashes($filename, '"\\') . '"');
