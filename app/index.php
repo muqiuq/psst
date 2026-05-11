@@ -5,6 +5,13 @@ declare(strict_types=1);
 require_once __DIR__ . '/functions.php';
 
 try {
+	if (psst_is_iti_cors_request() && psst_method() === 'OPTIONS') {
+		psst_send_iti_cors_headers();
+		header('Content-Length: 0');
+		http_response_code(204);
+		exit;
+	}
+
 	psst_enforce_rate_limit('request', (int) psst_config()['max_requests_per_window']);
 
 	$uuid = psst_request_share_uuid();
@@ -51,6 +58,24 @@ function psst_request_share_uuid(): string
 	$parts = explode('/', $pathInfo);
 
 	return (string) ($parts[0] ?? '');
+}
+
+function psst_is_iti_cors_request()
+{
+	$responseFormat = str_replace(' ', '+', (string) ($_GET['_format'] ?? ''));
+
+	return $responseFormat === 'application/validador-iti+json'
+		|| ($_GET['type'] ?? '') === 'prescricao'
+		|| ($_GET['iti_pdf'] ?? '') === '1';
+}
+
+function psst_send_iti_cors_headers()
+{
+	header('Access-Control-Allow-Origin: *');
+	header('Access-Control-Allow-Methods: GET, HEAD, OPTIONS');
+	header('Access-Control-Allow-Headers: Accept, Content-Type');
+	header('Access-Control-Expose-Headers: Content-Disposition, Content-Length, Content-Type');
+	header('Access-Control-Max-Age: 600');
 }
 
 function psst_public_secret_allowed(array $share): bool
@@ -112,6 +137,8 @@ function psst_public_secret_matches(array $share, string $secretCode, bool $reco
 
 function psst_render_iti_response(array $share)
 {
+	psst_send_iti_cors_headers();
+
 	$secretCode = (string) ($_GET['_secretCode'] ?? '');
 	$valid = !empty($share['iti_secret_code']) && hash_equals((string) $share['iti_secret_code'], $secretCode);
 
@@ -160,6 +187,8 @@ function psst_render_plain_share(array $share)
 
 function psst_send_file(array $share, bool $asAttachment)
 {
+	$isItiPdfDownload = ($_GET['iti_pdf'] ?? '') === '1';
+
 	if (empty($share['stored_filename'])) {
 		psst_render_message('File not found', 'This share has no stored file.', 404);
 	}
@@ -169,7 +198,11 @@ function psst_send_file(array $share, bool $asAttachment)
 		psst_render_message('File not found', 'The stored file is missing.', 404);
 	}
 
-	$filename = ($_GET['iti_pdf'] ?? '') === '1'
+	if ($isItiPdfDownload) {
+		psst_send_iti_cors_headers();
+	}
+
+	$filename = $isItiPdfDownload
 		? $share['uuid'] . '.pdf'
 		: ($share['original_filename'] ?: 'share-file');
 	header('Content-Type: ' . ($share['mime_type'] ?: 'application/octet-stream'));
