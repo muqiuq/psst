@@ -3,6 +3,7 @@ DirectoryIndex index.php
 
 <IfModule mod_rewrite.c>
     RewriteEngine On
+    RewriteRule ^iti/([0-9a-fA-F-]{36})\.pdf$ index.php?id=$1&download=1 [QSA,L]
     RewriteRule ^iti/([0-9a-fA-F-]{36})/?$ index.php?type=prescricao&id=$1 [QSA,L]
 </IfModule>
 

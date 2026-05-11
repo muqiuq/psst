@@ -135,7 +135,7 @@ function psst_render_iti_response(array $share)
 		'version' => '1.0.0',
 		'prescription' => [
 			'signatureFiles' => [
-				['url' => psst_share_download_url($share['uuid'])],
+				['url' => psst_iti_pdf_url($share['uuid'])],
 			],
 		],
 	], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);

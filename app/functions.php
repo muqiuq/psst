@@ -184,6 +184,11 @@ function psst_iti_qr_url(string $uuid): string
     return psst_base_url() . '/iti/' . rawurlencode($uuid);
 }
 
+function psst_iti_pdf_url(string $uuid): string
+{
+    return psst_base_url() . '/iti/' . rawurlencode($uuid) . '.pdf';
+}
+
 function psst_hash_secret(string $secret): string
 {
     return password_hash($secret, PASSWORD_DEFAULT);
