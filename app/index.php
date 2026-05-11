@@ -9,12 +9,12 @@ try {
 
 	$uuid = (string) ($_GET['id'] ?? '');
 	if (!psst_validate_uuid($uuid)) {
-		psst_render_message('Share not found', 'The requested share link is invalid.', 404);
+		psst_empty_response(404);
 	}
 
 	$share = psst_share_find_by_uuid($uuid);
 	if (!$share) {
-		psst_render_message('Share not found', 'The requested share does not exist.', 404);
+		psst_empty_response(404);
 	}
 
 	$responseFormat = str_replace(' ', '+', (string) ($_GET['_format'] ?? ''));

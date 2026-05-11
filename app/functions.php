@@ -28,6 +28,12 @@ function psst_json(array $payload, int $statusCode = 200): never
     exit;
 }
 
+function psst_empty_response(int $statusCode): never
+{
+    http_response_code($statusCode);
+    exit;
+}
+
 function psst_request_json(): array
 {
     $rawBody = file_get_contents('php://input');
