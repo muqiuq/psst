@@ -369,6 +369,8 @@
 
         if (mode === 'iti') {
             addPdfText(lines, 72, 710, 16, `ITI secret code: ${share.iti_secret_code || ''}`);
+            addPdfText(lines, 72, 682, 11, 'English: This document can be verified at https://validar.iti.gov.br.');
+            addPdfText(lines, 72, 666, 11, 'Portugues: Este documento pode ser verificado em https://validar.iti.gov.br.');
         }
 
         addPdfText(lines, 72, 274, 11, 'Link:');
