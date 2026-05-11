@@ -7,7 +7,7 @@ require_once __DIR__ . '/functions.php';
 try {
 	psst_enforce_rate_limit('request', (int) psst_config()['max_requests_per_window']);
 
-	$uuid = (string) ($_GET['id'] ?? '');
+	$uuid = psst_request_share_uuid();
 	if (!psst_validate_uuid($uuid)) {
 		psst_empty_response(404);
 	}
@@ -38,6 +38,19 @@ try {
 	psst_render_plain_share($share);
 } catch (Throwable $exception) {
 	psst_render_message('Server error', $exception->getMessage(), 500);
+}
+
+function psst_request_share_uuid(): string
+{
+	$uuid = (string) ($_GET['id'] ?? '');
+	if ($uuid !== '') {
+		return $uuid;
+	}
+
+	$pathInfo = trim((string) ($_SERVER['PATH_INFO'] ?? ''), '/');
+	$parts = explode('/', $pathInfo);
+
+	return (string) ($parts[0] ?? '');
 }
 
 function psst_public_secret_allowed(array $share): bool
