@@ -364,7 +364,7 @@
         const qrY = 320;
         const lines = [];
 
-        addPdfText(lines, 72, 770, 22, 'PSST QR Code');
+        addPdfText(lines, 72, 770, 22, mode === 'iti' ? 'Validation' : 'PSST QR Code');
         addPdfText(lines, 72, 738, 12, share.title || share.uuid);
 
         if (mode === 'iti') {
