@@ -146,6 +146,6 @@ require_once __DIR__ . '/functions.php';
     <script src="js/psst-crypto.js"></script>
     <script src="js/qrcode-generator.js"></script>
     <script src="js/qr-lite.js"></script>
-    <script src="js/manage.js"></script>
+    <script src="js/manage.js?v=<?= filemtime(__DIR__ . '/js/manage.js') ?>"></script>
 </body>
 </html>

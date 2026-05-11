@@ -301,17 +301,29 @@
         window.PsstQr.render(elements.qrTarget, value);
     }
 
+    function downloadBlob(blob, filename) {
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        link.href = url;
+        link.download = filename;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+
+        window.setTimeout(() => {
+            URL.revokeObjectURL(url);
+            link.remove();
+        }, 1000);
+    }
+
     function downloadQr() {
         const svg = elements.qrTarget.querySelector('svg');
         if (!svg) {
+            setAlert('Render the QR code before downloading.', 'danger');
             return;
         }
         const blob = new Blob([svg.outerHTML], { type: 'image/svg+xml' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `${state.qrShare.uuid}.svg`;
-        link.click();
-        URL.revokeObjectURL(link.href);
+        downloadBlob(blob, `${state.qrShare.uuid}.svg`);
     }
 
     function pdfEscape(value) {
@@ -365,34 +377,41 @@
 
     function downloadQrPdf() {
         if (!state.qrShare) {
+            setAlert('Choose a share before downloading a PDF.', 'danger');
             return;
         }
 
         const mode = document.querySelector('input[name="qr-mode"]:checked').value;
         const value = qrValue(mode);
-        if (!value || typeof qrcode !== 'function') {
+        if (!value) {
+            setAlert('This QR code has no URL to download.', 'danger');
             return;
         }
 
-        const content = qrPdfContent(state.qrShare, mode, value);
-        const parts = ['%PDF-1.4\n'];
-        const offsets = [0];
-        offsets.push(createPdfObject(parts, '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n'));
-        offsets.push(createPdfObject(parts, '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n'));
-        offsets.push(createPdfObject(parts, '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n'));
-        offsets.push(createPdfObject(parts, '4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n'));
-        offsets.push(createPdfObject(parts, `5 0 obj << /Length ${content.length} >> stream\n${content}\nendstream endobj\n`));
-        const xrefOffset = parts.join('').length;
-        parts.push('xref\n0 6\n0000000000 65535 f \n');
-        offsets.slice(1).forEach((offset) => parts.push(`${String(offset).padStart(10, '0')} 00000 n \n`));
-        parts.push(`trailer << /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+        if (typeof qrcode !== 'function') {
+            setAlert('QR generator is unavailable.', 'danger');
+            return;
+        }
 
-        const blob = new Blob(parts, { type: 'application/pdf' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `${state.qrShare.uuid}-${mode}.pdf`;
-        link.click();
-        URL.revokeObjectURL(link.href);
+        try {
+            const content = qrPdfContent(state.qrShare, mode, value);
+            const parts = ['%PDF-1.4\n'];
+            const offsets = [0];
+            offsets.push(createPdfObject(parts, '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n'));
+            offsets.push(createPdfObject(parts, '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n'));
+            offsets.push(createPdfObject(parts, '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n'));
+            offsets.push(createPdfObject(parts, '4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n'));
+            offsets.push(createPdfObject(parts, `5 0 obj << /Length ${content.length} >> stream\n${content}\nendstream endobj\n`));
+            const xrefOffset = parts.join('').length;
+            parts.push('xref\n0 6\n0000000000 65535 f \n');
+            offsets.slice(1).forEach((offset) => parts.push(`${String(offset).padStart(10, '0')} 00000 n \n`));
+            parts.push(`trailer << /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+
+            const blob = new Blob(parts, { type: 'application/pdf' });
+            downloadBlob(blob, `${state.qrShare.uuid}-${mode}.pdf`);
+        } catch (error) {
+            setAlert(error.message || 'Unable to create QR PDF.', 'danger');
+        }
     }
 
     async function init() {
