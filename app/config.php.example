@@ -1,0 +1,23 @@
+<?php
+
+declare(strict_types=1);
+
+return [
+    'app_name' => 'PSST',
+    'base_url' => 'http://localhost:8081',
+    'admin_username' => 'admin',
+    'admin_password' => 'psst',
+    'htp_secret_number' => 2,
+    'data_dir' => __DIR__ . '/data',
+    'files_dir' => __DIR__ . '/data/files',
+    'database_path' => __DIR__ . '/data/psst.sqlite',
+    'server_secret_code' => '',
+    'rate_limit_window_seconds' => 3600,
+    'max_requests_per_window' => 50,
+    'max_failed_secret_attempts_per_window' => 10,
+    'login_delay_seconds' => 3,
+    'max_failed_login_attempts' => 10,
+    'login_block_seconds' => 86400,
+    'session_lifetime_seconds' => 7776000,
+    'session_name' => 'psst_session',
+];

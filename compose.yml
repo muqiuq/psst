@@ -1,0 +1,11 @@
+services:
+  psst:
+    build:
+      context: .
+      dockerfile: Containerfile
+    container_name: psst-app
+    ports:
+      - "8081:80"
+    volumes:
+      - ./app/data:/var/www/html/data
+    restart: unless-stopped

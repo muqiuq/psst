@@ -1,0 +1,42 @@
+body {
+    color: #1f2933;
+}
+
+.auth-shell {
+    max-width: 420px;
+    margin-top: 10vh;
+}
+
+.table td,
+.table th {
+    vertical-align: middle;
+}
+
+.share-title {
+    max-width: 34rem;
+    overflow-wrap: anywhere;
+}
+
+.action-group {
+    display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.375rem;
+}
+
+.qr-target {
+    min-height: 292px;
+    display: grid;
+    place-items: center;
+    background: #fff;
+}
+
+.qr-target svg {
+    width: min(256px, 100%);
+    height: auto;
+}
+
+.decrypted-text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}

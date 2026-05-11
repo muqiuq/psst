@@ -1,0 +1,19 @@
+# macOS and editor files
+.DS_Store
+.vscode/
+.idea/
+
+# Local configuration and logs
+.env
+.env.*
+*.log
+
+# PSST runtime data
+app/data/*
+!app/data/.htaccess
+!app/data/files/
+app/data/files/*
+!app/data/files/.gitkeep
+
+app/config.php
+
