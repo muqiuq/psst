@@ -330,6 +330,21 @@
         return String(value).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
     }
 
+    function wrapPdfText(value, maxLength, maxLines) {
+        const chunks = String(value).match(new RegExp(`.{1,${maxLength}}`, 'g')) || [''];
+        if (chunks.length <= maxLines) {
+            return chunks;
+        }
+
+        const lines = chunks.slice(0, maxLines);
+        lines[maxLines - 1] = `${lines[maxLines - 1].slice(0, Math.max(0, maxLength - 3))}...`;
+        return lines;
+    }
+
+    function addPdfText(lines, x, y, size, value) {
+        lines.push(`BT /F1 ${size} Tf ${x} ${y} Td (${pdfEscape(value)}) Tj ET`);
+    }
+
     function createPdfObject(parts, object) {
         const offset = parts.join('').length;
         parts.push(object);
@@ -343,20 +358,23 @@
 
         const pageHeight = 842;
         const moduleCount = qr.getModuleCount();
-        const qrSize = 300;
+        const qrSize = 280;
         const cellSize = qrSize / moduleCount;
-        const qrX = 147;
-        const qrYTop = 120;
-        const qrY = pageHeight - qrYTop - qrSize;
-        const lines = [
-            'BT /F1 22 Tf 72 770 Td (PSST QR Code) Tj ET',
-            `BT /F1 12 Tf 72 738 Td (${pdfEscape(share.title || share.uuid)}) Tj ET`,
-            `BT /F1 11 Tf 72 94 Td (${pdfEscape(value)}) Tj ET`,
-        ];
+        const qrX = 158;
+        const qrY = 320;
+        const lines = [];
+
+        addPdfText(lines, 72, 770, 22, 'PSST QR Code');
+        addPdfText(lines, 72, 738, 12, share.title || share.uuid);
 
         if (mode === 'iti') {
-            lines.push(`BT /F1 16 Tf 72 710 Td (ITI secret code: ${pdfEscape(share.iti_secret_code || '')}) Tj ET`);
+            addPdfText(lines, 72, 710, 16, `ITI secret code: ${share.iti_secret_code || ''}`);
         }
+
+        addPdfText(lines, 72, 274, 11, 'Link:');
+        wrapPdfText(value, 82, 7).forEach((line, index) => {
+            addPdfText(lines, 72, 258 - index * 14, 10, line);
+        });
 
         lines.push('1 1 1 rg');
         lines.push(`${qrX - 18} ${qrY - 18} ${qrSize + 36} ${qrSize + 36} re f`);
