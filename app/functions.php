@@ -181,7 +181,7 @@ function psst_share_download_url(string $uuid): string
 
 function psst_iti_qr_url(string $uuid): string
 {
-    return psst_base_url() . '/index.php?type=prescricao&id=' . rawurlencode($uuid);
+    return psst_base_url() . '/iti/' . rawurlencode($uuid);
 }
 
 function psst_hash_secret(string $secret): string
