@@ -3,6 +3,9 @@ DirectoryIndex index.php
 
 <IfModule mod_rewrite.c>
     RewriteEngine On
+    RewriteBase /
+    RewriteRule ^/?functions/psst/iti/([0-9a-fA-F-]{36})/?$ /functions/psst/index.php?type=prescricao&id=$1 [QSA,L]
+    RewriteRule ^/?psst/iti/([0-9a-fA-F-]{36})/?$ /psst/index.php?type=prescricao&id=$1 [QSA,L]
     RewriteRule ^iti/([0-9a-fA-F-]{36})/?$ index.php?type=prescricao&id=$1 [QSA,L]
 </IfModule>
 
