@@ -214,7 +214,7 @@ function psst_validate_uuid(string $uuid): bool
     return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $uuid) === 1;
 }
 
-function psst_bool(mixed $value): bool
+function psst_bool($value): bool
 {
     if (is_bool($value)) {
         return $value;
@@ -236,7 +236,7 @@ function psst_html(string $value): string
     return htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
-function psst_normalize_meta(mixed $meta): ?string
+function psst_normalize_meta($meta): ?string
 {
     if ($meta === null || $meta === '') {
         return null;
