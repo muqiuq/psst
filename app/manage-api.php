@@ -259,6 +259,6 @@ function psst_build_share_payload(?array $existing): array
         'encryption_meta' => psst_normalize_meta($data['encryption_meta'] ?? $existing['encryption_meta'] ?? null),
         'secret_code_hash' => $secretCodeHash,
         'iti_secret_code_hash' => null,
-        'iti_secret_code' => $existing['iti_secret_code'] ?? psst_generate_iti_secret_code(),
+        'iti_secret_code' => psst_normalize_iti_secret_code($existing['iti_secret_code'] ?? null),
     ];
 }

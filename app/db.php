@@ -102,7 +102,23 @@ function psst_run_migrations(PDO $pdo): void
             foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $uuid) {
                 $update->execute([
                     'uuid' => $uuid,
-                    'iti_secret_code' => strtoupper(bin2hex(random_bytes(6))),
+                    'iti_secret_code' => psst_db_generate_iti_secret_code(),
+                ]);
+            }
+        },
+        4 => static function (PDO $pdo): void {
+            $statement = $pdo->query('SELECT uuid, iti_secret_code FROM shares');
+            $update = $pdo->prepare('UPDATE shares SET iti_secret_code = :iti_secret_code WHERE uuid = :uuid');
+
+            foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $share) {
+                $code = strtoupper(trim((string) ($share['iti_secret_code'] ?? '')));
+                if (preg_match('/^[A-Z0-9]{4}$/', $code) === 1) {
+                    continue;
+                }
+
+                $update->execute([
+                    'uuid' => $share['uuid'],
+                    'iti_secret_code' => psst_db_generate_iti_secret_code(),
                 ]);
             }
         },
@@ -127,4 +143,16 @@ function psst_run_migrations(PDO $pdo): void
             throw $exception;
         }
     }
+}
+
+function psst_db_generate_iti_secret_code(): string
+{
+    $alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    $code = '';
+
+    for ($index = 0; $index < 4; $index += 1) {
+        $code .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+    }
+
+    return $code;
 }

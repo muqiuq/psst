@@ -134,6 +134,7 @@ require_once __DIR__ . '/functions.php';
                         </div>
                         <div class="modal-footer">
                             <button class="btn btn-outline-secondary" id="copy-qr-url-button" type="button">Copy URL</button>
+                            <button class="btn btn-outline-secondary" id="download-qr-pdf-button" type="button">Download PDF</button>
                             <button class="btn btn-primary" id="download-qr-button" type="button">Download SVG</button>
                         </div>
                     </div>

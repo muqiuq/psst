@@ -179,11 +179,9 @@ function psst_share_download_url(string $uuid): string
     return psst_share_url($uuid) . '&download=1';
 }
 
-function psst_iti_validation_url(string $uuid, string $itiSecretCode): string
+function psst_iti_qr_url(string $uuid): string
 {
-    return psst_share_url($uuid)
-        . '&_format=application/validador-iti%2Bjson'
-        . '&_secretCode=' . rawurlencode($itiSecretCode);
+    return psst_share_url($uuid) . '&type=prescricao';
 }
 
 function psst_hash_secret(string $secret): string
@@ -198,7 +196,20 @@ function psst_verify_secret(string $secret, ?string $hash): bool
 
 function psst_generate_iti_secret_code(): string
 {
-    return strtoupper(bin2hex(random_bytes(6)));
+    $alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    $code = '';
+
+    for ($index = 0; $index < 4; $index += 1) {
+        $code .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+    }
+
+    return $code;
+}
+
+function psst_normalize_iti_secret_code(?string $code): string
+{
+    $code = strtoupper(trim((string) $code));
+    return preg_match('/^[A-Z0-9]{4}$/', $code) === 1 ? $code : psst_generate_iti_secret_code();
 }
 
 function psst_sanitize_filename(string $filename): string
@@ -293,7 +304,7 @@ function psst_manager_share(array $share): array
     $public = psst_public_share($share);
     $public['iti_secret_code'] = $share['iti_secret_code'] ?? '';
     $public['iti_url'] = !empty($share['iti_secret_code'])
-        ? psst_iti_validation_url($share['uuid'], $share['iti_secret_code'])
+        ? psst_iti_qr_url($share['uuid'])
         : null;
 
     return $public;

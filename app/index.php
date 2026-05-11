@@ -111,7 +111,7 @@ function psst_render_iti_response(array $share)
 		}
 
 		psst_rate_limit_record('failed_secret');
-		http_response_code(403);
+		http_response_code(401);
 		header('Content-Type: application/validador-iti+json; charset=utf-8');
 		echo json_encode(['error' => 'Invalid secret code.'], JSON_UNESCAPED_SLASHES);
 		exit;

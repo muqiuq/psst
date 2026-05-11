@@ -40,6 +40,7 @@
         qrItiCode: document.getElementById('qr-iti-code'),
         copyQrUrlButton: document.getElementById('copy-qr-url-button'),
         downloadQrButton: document.getElementById('download-qr-button'),
+        downloadQrPdfButton: document.getElementById('download-qr-pdf-button'),
     };
 
     const qrModal = new bootstrap.Modal(elements.qrModal);
@@ -313,6 +314,87 @@
         URL.revokeObjectURL(link.href);
     }
 
+    function pdfEscape(value) {
+        return String(value).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+    }
+
+    function createPdfObject(parts, object) {
+        const offset = parts.join('').length;
+        parts.push(object);
+        return offset;
+    }
+
+    function qrPdfContent(share, mode, value) {
+        const qr = qrcode(0, 'M');
+        qr.addData(value, 'Byte');
+        qr.make();
+
+        const pageHeight = 842;
+        const moduleCount = qr.getModuleCount();
+        const qrSize = 300;
+        const cellSize = qrSize / moduleCount;
+        const qrX = 147;
+        const qrYTop = 120;
+        const qrY = pageHeight - qrYTop - qrSize;
+        const lines = [
+            'BT /F1 22 Tf 72 770 Td (PSST QR Code) Tj ET',
+            `BT /F1 12 Tf 72 738 Td (${pdfEscape(share.title || share.uuid)}) Tj ET`,
+            `BT /F1 11 Tf 72 94 Td (${pdfEscape(value)}) Tj ET`,
+        ];
+
+        if (mode === 'iti') {
+            lines.push(`BT /F1 16 Tf 72 710 Td (ITI secret code: ${pdfEscape(share.iti_secret_code || '')}) Tj ET`);
+        }
+
+        lines.push('1 1 1 rg');
+        lines.push(`${qrX - 18} ${qrY - 18} ${qrSize + 36} ${qrSize + 36} re f`);
+        lines.push('0 0 0 rg');
+
+        for (let row = 0; row < moduleCount; row += 1) {
+            for (let col = 0; col < moduleCount; col += 1) {
+                if (qr.isDark(row, col)) {
+                    const x = qrX + col * cellSize;
+                    const y = qrY + (moduleCount - row - 1) * cellSize;
+                    lines.push(`${x.toFixed(3)} ${y.toFixed(3)} ${cellSize.toFixed(3)} ${cellSize.toFixed(3)} re f`);
+                }
+            }
+        }
+
+        return lines.join('\n');
+    }
+
+    function downloadQrPdf() {
+        if (!state.qrShare) {
+            return;
+        }
+
+        const mode = document.querySelector('input[name="qr-mode"]:checked').value;
+        const value = qrValue(mode);
+        if (!value || typeof qrcode !== 'function') {
+            return;
+        }
+
+        const content = qrPdfContent(state.qrShare, mode, value);
+        const parts = ['%PDF-1.4\n'];
+        const offsets = [0];
+        offsets.push(createPdfObject(parts, '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n'));
+        offsets.push(createPdfObject(parts, '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n'));
+        offsets.push(createPdfObject(parts, '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n'));
+        offsets.push(createPdfObject(parts, '4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n'));
+        offsets.push(createPdfObject(parts, `5 0 obj << /Length ${content.length} >> stream\n${content}\nendstream endobj\n`));
+        const xrefOffset = parts.join('').length;
+        parts.push('xref\n0 6\n0000000000 65535 f \n');
+        offsets.slice(1).forEach((offset) => parts.push(`${String(offset).padStart(10, '0')} 00000 n \n`));
+        parts.push(`trailer << /Size 6 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+
+        const blob = new Blob(parts, { type: 'application/pdf' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `${state.qrShare.uuid}-${mode}.pdf`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+    }
+
     async function init() {
         elements.type.addEventListener('change', updateFieldVisibility);
         elements.encrypted.addEventListener('change', updateFieldVisibility);
@@ -321,6 +403,7 @@
         elements.refreshButton.addEventListener('click', loadShares);
         elements.copyQrUrlButton.addEventListener('click', () => copyText(elements.qrUrl.value));
         elements.downloadQrButton.addEventListener('click', downloadQr);
+        elements.downloadQrPdfButton.addEventListener('click', downloadQrPdf);
         document.querySelectorAll('input[name="qr-mode"]').forEach((input) => input.addEventListener('change', renderQr));
 
         elements.loginForm.addEventListener('submit', async (event) => {
