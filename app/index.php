@@ -338,6 +338,12 @@ function psst_handle_upload(array $share): void
 
 		if ($written === 0) {
 			@unlink($tmpPath);
+			// PHP consumes the request body into $_POST for urlencoded/multipart content
+			// types, leaving php://input empty. Hint at the required header so clients
+			// (e.g. MikroTik fetch) send the body as raw bytes instead.
+			if (!empty($_POST)) {
+				psst_upload_respond(400, 'Empty request body. Send raw data with header "Content-Type: application/octet-stream".');
+			}
 			psst_upload_respond(400, 'Empty request body.');
 		}
 
@@ -414,7 +420,7 @@ function psst_render_upload_page(array $share): void
 	$curlMultipart = sprintf('curl -F "file=@/path/to/file" "%s"', $uploadUrl);
 	$curlRaw = sprintf('curl --data-binary @/path/to/file "%s&filename=file"', $uploadUrl);
 	$mikrotik = sprintf(
-		'/tool fetch http-method=post url="%s&filename=psst.rsc" http-data=[/export]',
+		'/export file=psst; :delay 2s; /tool fetch http-method=post http-header-field="Content-Type: application/octet-stream" url="%s&filename=psst.rsc" http-data=[/file get psst.rsc contents]',
 		$uploadUrl
 	);
 

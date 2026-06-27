@@ -105,7 +105,7 @@
         return {
             multipart: `curl -F "file=@/path/to/file" "${uploadUrl}"`,
             raw: `curl --data-binary @/path/to/file "${uploadUrl}${separator}filename=file"`,
-            mikrotik: `/tool fetch http-method=post url="${uploadUrl}${separator}filename=psst.rsc" http-data=[/export]`,
+            mikrotik: `/export file=psst; :delay 2s; /tool fetch http-method=post http-header-field="Content-Type: application/octet-stream" url="${uploadUrl}${separator}filename=psst.rsc" http-data=[/file get psst.rsc contents]`,
         };
     }
 
