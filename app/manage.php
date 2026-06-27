@@ -56,6 +56,7 @@ require_once __DIR__ . '/functions.php';
                             <option value="text">Text</option>
                             <option value="link">Link</option>
                             <option value="file">File</option>
+                            <option value="upload">Upload (drop box)</option>
                         </select>
 
                         <label class="form-label" for="share-title">Title</label>
@@ -76,7 +77,47 @@ require_once __DIR__ . '/functions.php';
                             <input class="form-control mb-3" id="share-file" type="file">
                         </div>
 
-                        <div class="form-check form-switch mb-3">
+                        <div id="upload-fields" class="d-none">
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" id="share-upload-token" type="checkbox" checked>
+                                <label class="form-check-label" for="share-upload-token">Require an upload token</label>
+                            </div>
+                            <div id="upload-info" class="d-none">
+                                <label class="form-label">Upload URL</label>
+                                <div class="input-group mb-3">
+                                    <input class="form-control" id="upload-url" readonly>
+                                    <button class="btn btn-outline-secondary" id="copy-upload-url" type="button">Copy</button>
+                                </div>
+                                <label class="form-label">One-liners</label>
+                                <div class="mb-2">
+                                    <div class="small text-muted">Linux (multipart)</div>
+                                    <div class="input-group">
+                                        <input class="form-control font-monospace small" id="cmd-curl-multipart" readonly>
+                                        <button class="btn btn-outline-secondary" data-copy-target="cmd-curl-multipart" type="button">Copy</button>
+                                    </div>
+                                </div>
+                                <div class="mb-2">
+                                    <div class="small text-muted">Linux (raw body)</div>
+                                    <div class="input-group">
+                                        <input class="form-control font-monospace small" id="cmd-curl-raw" readonly>
+                                        <button class="btn btn-outline-secondary" data-copy-target="cmd-curl-raw" type="button">Copy</button>
+                                    </div>
+                                </div>
+                                <div class="mb-3">
+                                    <div class="small text-muted">MikroTik RouterOS</div>
+                                    <div class="input-group">
+                                        <input class="form-control font-monospace small" id="cmd-mikrotik" readonly>
+                                        <button class="btn btn-outline-secondary" data-copy-target="cmd-mikrotik" type="button">Copy</button>
+                                    </div>
+                                </div>
+                                <label class="form-label">Received files (<span id="upload-file-count">0</span>)</label>
+                                <ul class="list-group mb-3" id="upload-file-list">
+                                    <li class="list-group-item text-muted small">No files received yet.</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="form-check form-switch mb-3" id="encrypt-switch-row">
                             <input class="form-check-input" id="share-encrypted" type="checkbox">
                             <label class="form-check-label" for="share-encrypted">Encrypt in browser</label>
                         </div>

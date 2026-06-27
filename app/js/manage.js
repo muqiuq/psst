@@ -31,6 +31,17 @@
         textFields: document.getElementById('text-fields'),
         linkFields: document.getElementById('link-fields'),
         fileFields: document.getElementById('file-fields'),
+        uploadFields: document.getElementById('upload-fields'),
+        uploadToken: document.getElementById('share-upload-token'),
+        uploadInfo: document.getElementById('upload-info'),
+        uploadUrl: document.getElementById('upload-url'),
+        copyUploadUrl: document.getElementById('copy-upload-url'),
+        cmdCurlMultipart: document.getElementById('cmd-curl-multipart'),
+        cmdCurlRaw: document.getElementById('cmd-curl-raw'),
+        cmdMikrotik: document.getElementById('cmd-mikrotik'),
+        uploadFileCount: document.getElementById('upload-file-count'),
+        uploadFileList: document.getElementById('upload-file-list'),
+        encryptSwitchRow: document.getElementById('encrypt-switch-row'),
         passwordFields: document.getElementById('password-fields'),
         saveButton: document.getElementById('save-button'),
         table: document.getElementById('shares-table'),
@@ -77,19 +88,122 @@
 
     function updateFieldVisibility() {
         const type = elements.type.value;
+        const isUpload = type === 'upload';
         elements.textFields.classList.toggle('d-none', type !== 'text');
         elements.linkFields.classList.toggle('d-none', type !== 'link');
         elements.fileFields.classList.toggle('d-none', type !== 'file');
-        elements.passwordFields.classList.toggle('d-none', !elements.encrypted.checked);
+        elements.uploadFields.classList.toggle('d-none', !isUpload);
+        elements.encryptSwitchRow.classList.toggle('d-none', isUpload);
+        if (isUpload) {
+            elements.encrypted.checked = false;
+        }
+        elements.passwordFields.classList.toggle('d-none', isUpload || !elements.encrypted.checked);
+    }
+
+    function buildOneLiners(uploadUrl) {
+        const separator = uploadUrl.includes('?') ? '&' : '?';
+        return {
+            multipart: `curl -F "file=@/path/to/file" "${uploadUrl}"`,
+            raw: `curl --data-binary @/path/to/file "${uploadUrl}${separator}filename=file"`,
+            mikrotik: `/tool fetch url="${uploadUrl}${separator}filename=backup.backup" http-method=post upload-file=backup.backup`,
+        };
+    }
+
+    function renderUploadInfo(share) {
+        const isUpload = share && share.type === 'upload';
+        elements.uploadInfo.classList.toggle('d-none', !isUpload);
+        if (!isUpload) {
+            return;
+        }
+
+        const uploadUrl = share.upload_url || share.url;
+        elements.uploadUrl.value = uploadUrl;
+        const cmds = buildOneLiners(uploadUrl);
+        elements.cmdCurlMultipart.value = cmds.multipart;
+        elements.cmdCurlRaw.value = cmds.raw;
+        elements.cmdMikrotik.value = cmds.mikrotik;
+        elements.uploadToken.checked = Boolean(share.upload_token);
+
+        const files = share.upload_files || [];
+        elements.uploadFileCount.textContent = String(files.length);
+        elements.uploadFileList.innerHTML = '';
+        if (!files.length) {
+            elements.uploadFileList.innerHTML = '<li class="list-group-item text-muted small">No files received yet.</li>';
+            return;
+        }
+
+        files.forEach((file) => {
+            const item = document.createElement('li');
+            item.className = 'list-group-item d-flex justify-content-between align-items-center gap-2';
+            const info = document.createElement('div');
+            info.className = 'text-truncate';
+            const name = document.createElement('a');
+            name.href = file.download_url;
+            name.target = '_blank';
+            name.rel = 'noopener noreferrer';
+            name.className = 'fw-semibold d-block text-truncate';
+            name.textContent = file.original_filename;
+            const meta = document.createElement('div');
+            meta.className = 'small text-muted';
+            meta.textContent = `${formatBytes(file.file_size)} · ${file.created_at}`;
+            info.appendChild(name);
+            info.appendChild(meta);
+
+            const remove = document.createElement('button');
+            remove.className = 'btn btn-sm btn-outline-danger flex-shrink-0';
+            remove.type = 'button';
+            remove.textContent = 'Delete';
+            remove.addEventListener('click', () => deleteUploadFile(share, file));
+
+            item.appendChild(info);
+            item.appendChild(remove);
+            elements.uploadFileList.appendChild(item);
+        });
+    }
+
+    function formatBytes(bytes) {
+        if (bytes === null || bytes === undefined) {
+            return 'unknown size';
+        }
+        if (bytes < 1024) {
+            return `${bytes} B`;
+        }
+        const units = ['KB', 'MB', 'GB'];
+        let value = bytes / 1024;
+        let unitIndex = 0;
+        while (value >= 1024 && unitIndex < units.length - 1) {
+            value /= 1024;
+            unitIndex += 1;
+        }
+        return `${value.toFixed(1)} ${units[unitIndex]}`;
+    }
+
+    async function deleteUploadFile(share, file) {
+        if (!window.confirm(`Delete ${file.original_filename}?`)) {
+            return;
+        }
+        await api('upload_delete', {
+            method: 'POST',
+            query: `&uuid=${encodeURIComponent(share.uuid)}&file=${encodeURIComponent(file.uuid)}`,
+        });
+        setAlert('File deleted.');
+        await loadShares();
+        const refreshed = state.shares.find((item) => item.uuid === share.uuid);
+        if (refreshed && state.editing && state.editing.uuid === share.uuid) {
+            state.editing = refreshed;
+            renderUploadInfo(refreshed);
+        }
     }
 
     function resetForm() {
         state.editing = null;
         elements.shareForm.reset();
         elements.uuid.value = '';
+        elements.uploadToken.checked = true;
         elements.formTitle.textContent = 'New share';
         elements.saveButton.textContent = 'Create share';
         elements.cancelEditButton.classList.add('d-none');
+        renderUploadInfo(null);
         updateFieldVisibility();
     }
 
@@ -168,6 +282,7 @@
         elements.formTitle.textContent = 'Edit share';
         elements.saveButton.textContent = 'Save changes';
         elements.cancelEditButton.classList.remove('d-none');
+        renderUploadInfo(share);
         updateFieldVisibility();
     }
 
@@ -200,6 +315,11 @@
         const type = elements.type.value;
         const encrypted = elements.encrypted.checked;
         appendCommonFields(formData);
+
+        if (type === 'upload') {
+            formData.set('require_token', elements.uploadToken.checked ? '1' : '0');
+            return formData;
+        }
 
         if (!encrypted) {
             if (type === 'text') {
@@ -256,8 +376,14 @@
             const query = state.editing ? `&uuid=${encodeURIComponent(state.editing.uuid)}` : '';
             const result = await api(action, { method: 'POST', query, body: payload });
             setAlert(state.editing ? 'Share updated.' : 'Share created.');
+            const savedShare = result && result.share ? result.share : null;
             resetForm();
             await loadShares();
+            // Keep upload shares open in edit mode so the owner sees the URL + one-liners.
+            if (savedShare && savedShare.type === 'upload') {
+                const refreshed = state.shares.find((item) => item.uuid === savedShare.uuid) || savedShare;
+                editShare(refreshed);
+            }
         } catch (error) {
             setAlert(error.message || 'Unable to save share.', 'danger');
         } finally {
@@ -443,6 +569,15 @@
         elements.copyQrUrlButton.addEventListener('click', () => copyText(elements.qrUrl.value));
         elements.downloadQrButton.addEventListener('click', downloadQr);
         elements.downloadQrPdfButton.addEventListener('click', downloadQrPdf);
+        elements.copyUploadUrl.addEventListener('click', () => copyText(elements.uploadUrl.value));
+        document.querySelectorAll('button[data-copy-target]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const target = document.getElementById(button.dataset.copyTarget);
+                if (target) {
+                    copyText(target.value);
+                }
+            });
+        });
         document.querySelectorAll('input[name="qr-mode"]').forEach((input) => input.addEventListener('change', renderQr));
 
         elements.loginForm.addEventListener('submit', async (event) => {

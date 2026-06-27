@@ -12,6 +12,7 @@ return [
     'files_dir' => __DIR__ . '/data/files',
     'database_path' => __DIR__ . '/data/psst.sqlite',
     'server_secret_code' => '',
+    'max_upload_bytes' => 104857600,
     'rate_limit_window_seconds' => 3600,
     'max_requests_per_window' => 50,
     'max_failed_secret_attempts_per_window' => 10,

@@ -29,6 +29,14 @@ try {
 		psst_render_iti_response($share);
 	}
 
+	if ($share['type'] === 'upload') {
+		if (psst_method() === 'POST' || psst_method() === 'PUT') {
+			psst_handle_upload($share);
+		}
+
+		psst_render_upload_page($share);
+	}
+
 	psst_start_session();
 	if (!psst_public_secret_allowed($share)) {
 		psst_render_secret_prompt($share);
@@ -212,6 +220,247 @@ function psst_send_file(array $share, bool $asAttachment)
 	readfile($path);
 	exit;
 }
+
+function psst_upload_respond(int $statusCode, string $message): void
+{
+	http_response_code($statusCode);
+	header('Content-Type: text/plain; charset=utf-8');
+	echo $message . "\n";
+	exit;
+}
+
+function psst_handle_upload(array $share): void
+{
+	$requiredToken = (string) ($share['upload_token'] ?? '');
+	if ($requiredToken !== '') {
+		$providedToken = (string) ($_GET['t'] ?? ($_SERVER['HTTP_X_UPLOAD_TOKEN'] ?? ''));
+		if (!hash_equals($requiredToken, $providedToken)) {
+			psst_upload_respond(403, 'Invalid or missing upload token.');
+		}
+	}
+
+	$maxBytes = (int) psst_config()['max_upload_bytes'];
+	$contentLength = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
+	if ($maxBytes > 0 && $contentLength > $maxBytes) {
+		psst_upload_respond(413, 'Upload exceeds the maximum allowed size.');
+	}
+
+	$stored = [];
+	$multipart = [];
+
+	if (!empty($_FILES)) {
+		foreach ($_FILES as $field) {
+			$names = $field['name'];
+			if (is_array($names)) {
+				foreach (array_keys($names) as $index) {
+					$multipart[] = [
+						'name' => (string) $field['name'][$index],
+						'type' => (string) $field['type'][$index],
+						'tmp_name' => (string) $field['tmp_name'][$index],
+						'error' => (int) $field['error'][$index],
+						'size' => (int) $field['size'][$index],
+					];
+				}
+			} else {
+				$multipart[] = [
+					'name' => (string) $field['name'],
+					'type' => (string) $field['type'],
+					'tmp_name' => (string) $field['tmp_name'],
+					'error' => (int) $field['error'],
+					'size' => (int) $field['size'],
+				];
+			}
+		}
+	}
+
+	if ($multipart !== []) {
+		foreach ($multipart as $file) {
+			if (($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+				continue;
+			}
+			if ($file['error'] !== UPLOAD_ERR_OK) {
+				psst_upload_respond(400, 'Upload failed for one of the files.');
+			}
+			if ($maxBytes > 0 && (int) $file['size'] > $maxBytes) {
+				psst_upload_respond(413, 'Upload exceeds the maximum allowed size.');
+			}
+
+			$originalName = psst_sanitize_filename($file['name'] !== '' ? $file['name'] : psst_upload_fallback_name());
+			$record = psst_store_upload_file(
+				$share,
+				$file['tmp_name'],
+				true,
+				$originalName,
+				$file['type'] !== '' ? $file['type'] : null
+			);
+			$stored[] = $record;
+		}
+
+		if ($stored === []) {
+			psst_upload_respond(400, 'No file was received.');
+		}
+	} else {
+		$tmpPath = tempnam(sys_get_temp_dir(), 'psst_upload_');
+		if ($tmpPath === false) {
+			psst_upload_respond(500, 'Unable to buffer the upload.');
+		}
+
+		$input = fopen('php://input', 'rb');
+		if ($input === false) {
+			@unlink($tmpPath);
+			psst_upload_respond(400, 'No request body was received.');
+		}
+
+		$out = fopen($tmpPath, 'wb');
+		if ($out === false) {
+			fclose($input);
+			@unlink($tmpPath);
+			psst_upload_respond(500, 'Unable to buffer the upload.');
+		}
+
+		$written = 0;
+		while (!feof($input)) {
+			$chunk = fread($input, 1 << 16);
+			if ($chunk === false) {
+				break;
+			}
+			$written += strlen($chunk);
+			if ($maxBytes > 0 && $written > $maxBytes) {
+				fclose($input);
+				fclose($out);
+				@unlink($tmpPath);
+				psst_upload_respond(413, 'Upload exceeds the maximum allowed size.');
+			}
+			fwrite($out, $chunk);
+		}
+		fclose($input);
+		fclose($out);
+
+		if ($written === 0) {
+			@unlink($tmpPath);
+			psst_upload_respond(400, 'Empty request body.');
+		}
+
+		$originalName = psst_sanitize_filename(psst_upload_fallback_name());
+		$mime = (string) ($_SERVER['CONTENT_TYPE'] ?? '');
+		$mime = $mime !== '' ? trim(explode(';', $mime)[0]) : null;
+		$record = psst_store_upload_file($share, $tmpPath, false, $originalName, $mime);
+		@unlink($tmpPath);
+		$stored[] = $record;
+	}
+
+	$summary = array_map(
+		static fn (array $file): string => sprintf(
+			'%s (%d bytes)',
+			$file['original_filename'],
+			(int) ($file['file_size'] ?? 0)
+		),
+		$stored
+	);
+
+	psst_upload_respond(201, 'Upload received: ' . implode(', ', $summary));
+}
+
+function psst_upload_fallback_name(): string
+{
+	$provided = (string) ($_GET['filename'] ?? '');
+	if ($provided === '' && isset($_SERVER['HTTP_CONTENT_DISPOSITION'])) {
+		if (preg_match('/filename="?([^";]+)"?/i', (string) $_SERVER['HTTP_CONTENT_DISPOSITION'], $matches) === 1) {
+			$provided = $matches[1];
+		}
+	}
+
+	if ($provided !== '') {
+		return $provided;
+	}
+
+	return 'upload-' . date('Ymd-His') . '-' . bin2hex(random_bytes(3)) . '.bin';
+}
+
+function psst_store_upload_file(array $share, string $sourcePath, bool $isUploadedFile, string $originalName, ?string $mimeType): array
+{
+	$fileUuid = psst_uuid();
+	$storedFilename = $share['uuid'] . '-' . bin2hex(random_bytes(8)) . '-' . $originalName;
+	$target = psst_stored_file_path($storedFilename);
+
+	$moved = $isUploadedFile
+		? move_uploaded_file($sourcePath, $target)
+		: copy($sourcePath, $target);
+
+	if (!$moved) {
+		psst_upload_respond(500, 'Unable to store the uploaded file.');
+	}
+
+	return psst_upload_file_create([
+		'uuid' => $fileUuid,
+		'share_id' => (int) $share['id'],
+		'original_filename' => $originalName,
+		'stored_filename' => $storedFilename,
+		'mime_type' => $mimeType ?: 'application/octet-stream',
+		'file_size' => filesize($target) ?: 0,
+		'remote_ip' => psst_client_ip(),
+	]);
+}
+
+function psst_render_upload_page(array $share): void
+{
+	$title = $share['title'] !== '' ? $share['title'] : 'Upload';
+	$token = (string) ($share['upload_token'] ?? '');
+	$providedToken = (string) ($_GET['t'] ?? '');
+	$tokenForUrl = $token !== '' ? ($providedToken !== '' ? $providedToken : null) : null;
+	$uploadUrl = psst_upload_url($share['uuid'], $tokenForUrl);
+	$requiresToken = $token !== '';
+
+	$curlMultipart = sprintf('curl -F "file=@/path/to/file" "%s"', $uploadUrl);
+	$curlRaw = sprintf('curl --data-binary @/path/to/file "%s%sfilename=file"', $uploadUrl, str_contains($uploadUrl, '?') ? '&' : '?');
+	$mikrotik = sprintf(
+		'/tool fetch url="%s%sfilename=backup.backup" http-method=post upload-file=backup.backup',
+		$uploadUrl,
+		str_contains($uploadUrl, '?') ? '&' : '?'
+	);
+
+	header('Content-Type: text/html; charset=utf-8');
+	?>
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title><?= psst_html($title) ?></title>
+	<link rel="stylesheet" href="css/bootstrap.min.css">
+	<link rel="stylesheet" href="css/psst.css">
+</head>
+<body class="bg-light min-vh-100 d-flex align-items-center py-4">
+	<main class="container" style="max-width: 720px">
+		<section class="bg-white border rounded p-4">
+			<h1 class="h4 mb-3"><?= psst_html($title) ?></h1>
+			<p class="text-muted">Upload a file to this drop box. You can use the browser form below or one of the command-line snippets.</p>
+			<?php if ($requiresToken && $providedToken === ''): ?>
+				<div class="alert alert-warning py-2">This drop box requires an upload token. Append <code>&amp;t=YOUR_TOKEN</code> to the URL.</div>
+			<?php endif; ?>
+
+			<form method="post" enctype="multipart/form-data" action="<?= psst_html($uploadUrl) ?>" class="mb-4">
+				<label class="form-label" for="file">File</label>
+				<input class="form-control mb-3" id="file" name="file" type="file" required>
+				<button class="btn btn-primary" type="submit">Upload</button>
+			</form>
+
+			<h2 class="h6">Linux (multipart)</h2>
+			<pre class="bg-light border rounded p-2 small"><code><?= psst_html($curlMultipart) ?></code></pre>
+
+			<h2 class="h6">Linux (raw body)</h2>
+			<pre class="bg-light border rounded p-2 small"><code><?= psst_html($curlRaw) ?></code></pre>
+
+			<h2 class="h6">MikroTik RouterOS</h2>
+			<pre class="bg-light border rounded p-2 small"><code><?= psst_html($mikrotik) ?></code></pre>
+		</section>
+	</main>
+</body>
+</html>
+	<?php
+	exit;
+}
+
 
 function psst_render_secret_prompt(array $share)
 {

@@ -34,6 +34,12 @@ try {
         case 'delete':
             psst_api_delete_share();
             break;
+        case 'upload_download':
+            psst_api_upload_download();
+            break;
+        case 'upload_delete':
+            psst_api_upload_delete();
+            break;
         default:
             psst_json(['error' => 'Unknown action.'], 404);
     }
@@ -174,6 +180,63 @@ function psst_api_delete_share()
     psst_json(['deleted' => true]);
 }
 
+function psst_api_upload_download()
+{
+    psst_require_login();
+
+    if (psst_method() !== 'GET') {
+        psst_json(['error' => 'Method not allowed.'], 405);
+    }
+
+    $uuid = psst_api_uuid();
+    $fileUuid = (string) ($_GET['file'] ?? '');
+    if (!psst_validate_uuid($fileUuid)) {
+        psst_json(['error' => 'Invalid file UUID.'], 400);
+    }
+
+    $uploadFile = psst_upload_file_find($uuid, $fileUuid);
+    if (!$uploadFile) {
+        psst_json(['error' => 'Uploaded file not found.'], 404);
+    }
+
+    $path = psst_stored_file_path((string) $uploadFile['stored_filename']);
+    if (!is_file($path)) {
+        psst_json(['error' => 'Stored file is missing.'], 404);
+    }
+
+    $filename = $uploadFile['original_filename'] ?: 'upload-file';
+    header('Content-Type: ' . ($uploadFile['mime_type'] ?: 'application/octet-stream'));
+    header('Content-Length: ' . filesize($path));
+    header('Content-Disposition: attachment; filename="' . addcslashes($filename, '"\\') . '"');
+    header('X-Content-Type-Options: nosniff');
+    readfile($path);
+    exit;
+}
+
+function psst_api_upload_delete()
+{
+    psst_require_login();
+
+    if (psst_method() !== 'POST' && psst_method() !== 'DELETE') {
+        psst_json(['error' => 'Method not allowed.'], 405);
+    }
+
+    $uuid = psst_api_uuid();
+    $fileUuid = (string) ($_GET['file'] ?? '');
+    if (!psst_validate_uuid($fileUuid)) {
+        psst_json(['error' => 'Invalid file UUID.'], 400);
+    }
+
+    $uploadFile = psst_upload_file_find($uuid, $fileUuid);
+    if (!$uploadFile) {
+        psst_json(['error' => 'Uploaded file not found.'], 404);
+    }
+
+    psst_upload_file_delete($uploadFile);
+
+    psst_json(['deleted' => true]);
+}
+
 function psst_api_uuid(): string
 {
     $uuid = (string) ($_GET['uuid'] ?? '');
@@ -190,8 +253,8 @@ function psst_build_share_payload(?array $existing): array
     $uuid = $existing['uuid'] ?? psst_uuid();
     $type = trim((string) ($data['type'] ?? $existing['type'] ?? ''));
 
-    if (!in_array($type, ['text', 'link', 'file'], true)) {
-        psst_json(['error' => 'Share type must be text, link, or file.'], 400);
+    if (!in_array($type, ['text', 'link', 'file', 'upload'], true)) {
+        psst_json(['error' => 'Share type must be text, link, file, or upload.'], 400);
     }
 
     $isEncrypted = psst_bool($data['is_encrypted'] ?? $existing['is_encrypted'] ?? false);
@@ -200,6 +263,7 @@ function psst_build_share_payload(?array $existing): array
     $storedFilename = $existing['stored_filename'] ?? null;
     $mimeType = $existing['mime_type'] ?? null;
     $fileSize = $existing['file_size'] ?? null;
+    $uploadToken = $existing['upload_token'] ?? null;
 
     if ($type === 'text') {
         if (!$isEncrypted && trim((string) $content) === '') {
@@ -240,6 +304,28 @@ function psst_build_share_payload(?array $existing): array
         $content = null;
     }
 
+    if ($type === 'upload') {
+        // Upload shares act as a write inbox: no inline content or owner-uploaded file.
+        $content = null;
+        $originalFilename = null;
+        $storedFilename = null;
+        $mimeType = null;
+        $fileSize = null;
+        $isEncrypted = false;
+
+        $requireToken = psst_bool($data['require_token'] ?? ($uploadToken !== null && $uploadToken !== ''));
+        if ($requireToken) {
+            // Keep an existing token when editing; otherwise mint a fresh one.
+            if ($uploadToken === null || $uploadToken === '') {
+                $uploadToken = psst_random_token();
+            }
+        } else {
+            $uploadToken = null;
+        }
+    } else {
+        $uploadToken = null;
+    }
+
     $secretCodeHash = $existing['secret_code_hash'] ?? null;
     if (array_key_exists('secret_code', $data)) {
         $secretCode = trim((string) $data['secret_code']);
@@ -260,5 +346,6 @@ function psst_build_share_payload(?array $existing): array
         'secret_code_hash' => $secretCodeHash,
         'iti_secret_code_hash' => null,
         'iti_secret_code' => psst_normalize_iti_secret_code($existing['iti_secret_code'] ?? null),
+        'upload_token' => $uploadToken,
     ];
 }

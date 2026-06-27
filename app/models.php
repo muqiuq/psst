@@ -24,10 +24,10 @@ function psst_share_create(array $share): array
 {
     $sql = 'INSERT INTO shares (
         uuid, type, title, content, original_filename, stored_filename, mime_type,
-        file_size, is_encrypted, encryption_meta, secret_code_hash, iti_secret_code_hash, iti_secret_code
+        file_size, is_encrypted, encryption_meta, secret_code_hash, iti_secret_code_hash, iti_secret_code, upload_token
     ) VALUES (
         :uuid, :type, :title, :content, :original_filename, :stored_filename, :mime_type,
-        :file_size, :is_encrypted, :encryption_meta, :secret_code_hash, :iti_secret_code_hash, :iti_secret_code
+        :file_size, :is_encrypted, :encryption_meta, :secret_code_hash, :iti_secret_code_hash, :iti_secret_code, :upload_token
     )';
 
     $statement = psst_db()->prepare($sql);
@@ -45,6 +45,7 @@ function psst_share_create(array $share): array
         'secret_code_hash' => $share['secret_code_hash'] ?? null,
         'iti_secret_code_hash' => $share['iti_secret_code_hash'] ?? null,
         'iti_secret_code' => $share['iti_secret_code'] ?? null,
+        'upload_token' => $share['upload_token'] ?? null,
     ]);
 
     return psst_share_find_by_uuid($share['uuid']);
@@ -65,6 +66,7 @@ function psst_share_update(string $uuid, array $share): ?array
         secret_code_hash = :secret_code_hash,
         iti_secret_code_hash = :iti_secret_code_hash,
         iti_secret_code = :iti_secret_code,
+        upload_token = :upload_token,
         updated_at = CURRENT_TIMESTAMP
     WHERE uuid = :uuid';
 
@@ -83,6 +85,7 @@ function psst_share_update(string $uuid, array $share): ?array
         'secret_code_hash' => $share['secret_code_hash'] ?? null,
         'iti_secret_code_hash' => $share['iti_secret_code_hash'] ?? null,
         'iti_secret_code' => $share['iti_secret_code'] ?? null,
+        'upload_token' => $share['upload_token'] ?? null,
     ]);
 
     return psst_share_find_by_uuid($uuid);
@@ -95,10 +98,91 @@ function psst_share_delete(string $uuid): bool
         return false;
     }
 
+    foreach (psst_upload_files_for_share((int) $share['id']) as $uploadFile) {
+        psst_upload_file_unlink($uploadFile);
+    }
+
     $statement = psst_db()->prepare('DELETE FROM shares WHERE uuid = :uuid');
     $statement->execute(['uuid' => $uuid]);
 
     return $statement->rowCount() > 0;
+}
+
+function psst_upload_files_for_share(int $shareId): array
+{
+    $statement = psst_db()->prepare(
+        'SELECT upload_files.*, shares.uuid AS share_uuid FROM upload_files
+         INNER JOIN shares ON shares.id = upload_files.share_id
+         WHERE share_id = :share_id ORDER BY upload_files.created_at DESC, upload_files.id DESC'
+    );
+    $statement->execute(['share_id' => $shareId]);
+
+    return $statement->fetchAll();
+}
+
+function psst_upload_file_find(string $shareUuid, string $fileUuid): ?array
+{
+    $statement = psst_db()->prepare(
+        'SELECT upload_files.* FROM upload_files
+         INNER JOIN shares ON shares.id = upload_files.share_id
+         WHERE shares.uuid = :share_uuid AND upload_files.uuid = :file_uuid'
+    );
+    $statement->execute(['share_uuid' => $shareUuid, 'file_uuid' => $fileUuid]);
+    $file = $statement->fetch();
+
+    return $file ?: null;
+}
+
+function psst_upload_file_create(array $file): array
+{
+    $statement = psst_db()->prepare(
+        'INSERT INTO upload_files (
+            uuid, share_id, original_filename, stored_filename, mime_type, file_size, remote_ip
+        ) VALUES (
+            :uuid, :share_id, :original_filename, :stored_filename, :mime_type, :file_size, :remote_ip
+        )'
+    );
+    $statement->execute([
+        'uuid' => $file['uuid'],
+        'share_id' => $file['share_id'],
+        'original_filename' => $file['original_filename'],
+        'stored_filename' => $file['stored_filename'],
+        'mime_type' => $file['mime_type'] ?? null,
+        'file_size' => $file['file_size'] ?? null,
+        'remote_ip' => $file['remote_ip'] ?? null,
+    ]);
+
+    $statement = psst_db()->prepare('SELECT * FROM upload_files WHERE uuid = :uuid');
+    $statement->execute(['uuid' => $file['uuid']]);
+
+    return $statement->fetch();
+}
+
+function psst_upload_file_delete(array $uploadFile): bool
+{
+    psst_upload_file_unlink($uploadFile);
+
+    $statement = psst_db()->prepare('DELETE FROM upload_files WHERE id = :id');
+    $statement->execute(['id' => $uploadFile['id']]);
+
+    return $statement->rowCount() > 0;
+}
+
+function psst_upload_file_unlink(array $uploadFile): void
+{
+    if (empty($uploadFile['stored_filename'])) {
+        return;
+    }
+
+    try {
+        $path = psst_stored_file_path((string) $uploadFile['stored_filename']);
+    } catch (Throwable $exception) {
+        return;
+    }
+
+    if (is_file($path)) {
+        unlink($path);
+    }
 }
 
 function psst_record_event(string $ipAddress, string $eventType): void

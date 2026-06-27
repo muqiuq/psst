@@ -122,6 +122,67 @@ function psst_run_migrations(PDO $pdo): void
                 ]);
             }
         },
+        5 => static function (PDO $pdo): void {
+            // Rebuild the shares table to drop the type CHECK constraint (SQLite cannot
+            // alter a CHECK in place) and add the upload_token column. Type validation
+            // now lives in PHP so new types like 'upload' can be added freely.
+            $pdo->exec(
+                'CREATE TABLE shares_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    uuid TEXT NOT NULL UNIQUE,
+                    type TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT \'\',
+                    content TEXT,
+                    original_filename TEXT,
+                    stored_filename TEXT,
+                    mime_type TEXT,
+                    file_size INTEGER,
+                    is_encrypted INTEGER NOT NULL DEFAULT 0,
+                    encryption_meta TEXT,
+                    secret_code_hash TEXT,
+                    iti_secret_code_hash TEXT,
+                    iti_secret_code TEXT,
+                    upload_token TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )'
+            );
+
+            $pdo->exec(
+                'INSERT INTO shares_new (
+                    id, uuid, type, title, content, original_filename, stored_filename,
+                    mime_type, file_size, is_encrypted, encryption_meta, secret_code_hash,
+                    iti_secret_code_hash, iti_secret_code, created_at, updated_at
+                )
+                SELECT
+                    id, uuid, type, title, content, original_filename, stored_filename,
+                    mime_type, file_size, is_encrypted, encryption_meta, secret_code_hash,
+                    iti_secret_code_hash, iti_secret_code, created_at, updated_at
+                FROM shares'
+            );
+
+            $pdo->exec('DROP TABLE shares');
+            $pdo->exec('ALTER TABLE shares_new RENAME TO shares');
+            $pdo->exec('CREATE INDEX idx_shares_uuid ON shares (uuid)');
+        },
+        6 => static function (PDO $pdo): void {
+            $pdo->exec(
+                'CREATE TABLE upload_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    uuid TEXT NOT NULL UNIQUE,
+                    share_id INTEGER NOT NULL,
+                    original_filename TEXT NOT NULL,
+                    stored_filename TEXT NOT NULL,
+                    mime_type TEXT,
+                    file_size INTEGER,
+                    remote_ip TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (share_id) REFERENCES shares (id) ON DELETE CASCADE
+                )'
+            );
+
+            $pdo->exec('CREATE INDEX idx_upload_files_share ON upload_files (share_id)');
+        },
     ];
 
     $applied = $pdo->query('SELECT version FROM schema_migrations')->fetchAll(PDO::FETCH_COLUMN);
