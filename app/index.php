@@ -349,14 +349,14 @@ function psst_handle_upload(array $share): void
 		$stored[] = $record;
 	}
 
-	$summary = array_map(
-		static fn (array $file): string => sprintf(
+	$summary = [];
+	foreach ($stored as $file) {
+		$summary[] = sprintf(
 			'%s (%d bytes)',
 			$file['original_filename'],
 			(int) ($file['file_size'] ?? 0)
-		),
-		$stored
-	);
+		);
+	}
 
 	psst_upload_respond(201, 'Upload received: ' . implode(', ', $summary));
 }
@@ -412,11 +412,10 @@ function psst_render_upload_page(array $share): void
 	$requiresToken = $token !== '';
 
 	$curlMultipart = sprintf('curl -F "file=@/path/to/file" "%s"', $uploadUrl);
-	$curlRaw = sprintf('curl --data-binary @/path/to/file "%s%sfilename=file"', $uploadUrl, str_contains($uploadUrl, '?') ? '&' : '?');
+	$curlRaw = sprintf('curl --data-binary @/path/to/file "%s&filename=file"', $uploadUrl);
 	$mikrotik = sprintf(
-		'/tool fetch url="%s%sfilename=backup.backup" http-method=post upload-file=backup.backup',
-		$uploadUrl,
-		str_contains($uploadUrl, '?') ? '&' : '?'
+		'/tool fetch http-method=post url="%s&filename=psst.rsc" http-data=[/export]',
+		$uploadUrl
 	);
 
 	header('Content-Type: text/html; charset=utf-8');
