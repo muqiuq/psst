@@ -4,10 +4,21 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/functions.php';
 
+psst_configure_error_output();
+
 try {
     psst_db();
 
     $action = $_GET['action'] ?? '';
+
+    // Detect a body that PHP already discarded (post_max_size) before any handler runs,
+    // otherwise $_POST/$_FILES look empty and the client only sees a vague failure.
+    if (in_array($action, ['create', 'update'], true) && psst_post_body_too_large()) {
+        psst_json([
+            'error' => psst_upload_limit_message(),
+            'max_upload_bytes' => psst_max_upload_bytes(),
+        ], 413);
+    }
 
     switch ($action) {
         case 'status':
@@ -52,7 +63,9 @@ function psst_api_status()
     psst_json([
         'authenticated' => psst_is_logged_in(),
         'app_name' => psst_config()['app_name'],
+        'app_version' => psst_version(),
         'base_url' => psst_base_url(),
+        'max_upload_bytes' => psst_max_upload_bytes(),
     ]);
 }
 
@@ -287,7 +300,14 @@ function psst_build_share_payload(?array $existing): array
 
     if ($type === 'file') {
         $file = $_FILES['file'] ?? null;
-        if (is_array($file) && ($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
+        $errorCode = is_array($file) ? (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+
+        if ($errorCode === UPLOAD_ERR_OK) {
+            $maxBytes = psst_max_upload_bytes();
+            if ($maxBytes > 0 && (int) $file['size'] > $maxBytes) {
+                psst_json(['error' => psst_upload_limit_message(), 'max_upload_bytes' => $maxBytes], 413);
+            }
+
             $originalFilename = psst_sanitize_filename((string) $file['name']);
             $storedFilename = $uuid . '-' . bin2hex(random_bytes(8)) . '-' . $originalFilename;
             $mimeType = $file['type'] ?: 'application/octet-stream';
@@ -297,6 +317,9 @@ function psst_build_share_payload(?array $existing): array
             if (!move_uploaded_file((string) $file['tmp_name'], $target)) {
                 psst_json(['error' => 'Unable to store uploaded file.'], 500);
             }
+        } elseif ($errorCode !== UPLOAD_ERR_NO_FILE) {
+            $status = in_array($errorCode, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true) ? 413 : 400;
+            psst_json(['error' => psst_upload_error_message($errorCode)], $status);
         } elseif (!$existing) {
             psst_json(['error' => 'File shares require an uploaded file.'], 400);
         }

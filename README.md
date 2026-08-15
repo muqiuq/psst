@@ -9,6 +9,8 @@ PSST is a small vanilla PHP sharing tool for Apache. It lets an admin create sho
 - SQLite database with automatic migrations
 - Apache `.htaccess` protection for stored files and runtime data
 - Text, link, and file shares with random UUID URLs
+- Upload drop boxes with an optional token, multi-file selection, and upload progress
+- Mobile-friendly uploads with explicit size limits and readable error messages
 - Optional browser-side AES-GCM encryption with PBKDF2-SHA-256
 - Secret-code protected public shares
 - Manager login with 3 second delay, 24 hour IP block after 10 failed attempts, and HTP challenge field
@@ -16,6 +18,7 @@ PSST is a small vanilla PHP sharing tool for Apache. It lets an admin create sho
 - Standard QR codes for normal share URLs
 - ITI QR codes with automatically generated per-share validation codes
 - Brazilian ITI validator JSON response support
+- Version number, repository link, and author credit in the page footer
 - Podman-based local testing with Apache and PHP
 
 ## 🔧 Quick start
@@ -95,13 +98,33 @@ ITI validation URLs are generated automatically per share and include a generate
 https://example.com/psst/index.php?id=UUID&_format=application/validador-iti%2Bjson&_secretCode=ITI_CODE
 ```
 
+### Upload limits
+
+The effective limit is the smallest of `max_upload_bytes` in `app/config.php` and PHP's
+`upload_max_filesize` / `post_max_size`. PHP's stock defaults (2 MB / 8 MB) are far below
+the app default and silently discard larger request bodies, which is why phone photos and
+videos used to fail. The limits are raised in three places, depending on how PHP runs:
+
+| Deployment | File |
+| --- | --- |
+| Container image | `php/psst.ini` |
+| PHP-FPM / CGI, shared hosting | `app/.user.ini` |
+| Apache `mod_php` | `app/.htaccess` |
+
+Raise all three together, and keep `post_max_size` above `upload_max_filesize` to leave
+room for multipart overhead. Reverse proxies need their own limit raised as well, for
+example `client_max_body_size` in nginx. The manager form and the drop-box page show the
+current limit and reject oversized files before uploading.
+
 ## 📦 Deployment notes
 
 - Deploy the contents of `app/` to an Apache2 + PHP host.
 - Enable `.htaccess` support with `AllowOverride` for the application directory.
 - Make sure PHP can write to `app/data/` and `app/data/files/`.
 - Set `base_url` to the public URL, including any subfolder, for example `https://example.com/psst`.
+- Deploy `app/.user.ini` together with the app, or apply the equivalent upload limits in your PHP config.
 - Change the default admin credentials and `htp_secret_number` before production use.
+- Bump `PSST_VERSION` in `app/functions.php` on release. It is shown in the footer and returned by the `status` API.
 
 ## ⚠️ Disclaimer
 

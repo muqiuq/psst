@@ -5,6 +5,7 @@
         shares: [],
         editing: null,
         qrShare: null,
+        maxUploadBytes: 0,
     };
 
     const elements = {
@@ -25,6 +26,7 @@
         text: document.getElementById('share-text'),
         link: document.getElementById('share-link'),
         file: document.getElementById('share-file'),
+        fileHint: document.getElementById('share-file-hint'),
         encrypted: document.getElementById('share-encrypted'),
         password: document.getElementById('share-password'),
         secretCode: document.getElementById('secret-code'),
@@ -56,24 +58,88 @@
 
     const qrModal = new bootstrap.Modal(elements.qrModal);
 
-    async function api(action, options = {}) {
-        const response = await fetch(`manage-api.php?action=${encodeURIComponent(action)}${options.query || ''}`, {
-            method: options.method || 'GET',
-            body: options.body,
-            headers: options.headers,
-            credentials: 'same-origin',
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            throw new Error(data.error || 'Request failed.');
+    function httpErrorMessage(status, data, rawBody) {
+        if (data && data.error) {
+            return data.error;
         }
-        return data;
+
+        if (status === 0) {
+            return 'The connection was lost. Check your network and try again.';
+        }
+        if (status === 401) {
+            return 'Your session expired. Sign in again.';
+        }
+        if (status === 413) {
+            return state.maxUploadBytes
+                ? `The file is too large. The maximum accepted size is ${formatBytes(state.maxUploadBytes)}.`
+                : 'The file is too large for this server.';
+        }
+        if (status === 429) {
+            return 'Too many requests. Wait a moment and try again.';
+        }
+        if (status === 502 || status === 503 || status === 504) {
+            return 'The server is unavailable right now. Try again shortly.';
+        }
+
+        // A proxy or PHP limit may reply with HTML/plain text instead of JSON.
+        const text = (rawBody || '').trim();
+        if (text !== '' && text.charAt(0) !== '<' && text.length < 300) {
+            return text;
+        }
+
+        return `Request failed (HTTP ${status}).`;
     }
+
+    async function api(action, options = {}) {
+        const url = `manage-api.php?action=${encodeURIComponent(action)}${options.query || ''}`;
+        const headers = Object.assign({ Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' }, options.headers || {});
+
+        let response;
+        try {
+            response = await fetch(url, {
+                method: options.method || 'GET',
+                body: options.body,
+                headers,
+                credentials: 'same-origin',
+            });
+        } catch (error) {
+            // Network-level failure: offline, dropped mobile connection, aborted request.
+            throw new Error('The connection was lost. Check your network and try again.');
+        }
+
+        const rawBody = await response.text().catch(() => '');
+        let data = null;
+        if (rawBody.trim() !== '') {
+            try {
+                data = JSON.parse(rawBody);
+            } catch (error) {
+                data = null;
+            }
+        }
+
+        if (!response.ok) {
+            throw new Error(httpErrorMessage(response.status, data, rawBody));
+        }
+
+        return data || {};
+    }
+
+    let alertTimer = null;
 
     function setAlert(message, type = 'success') {
         elements.appAlert.textContent = message;
         elements.appAlert.className = `alert alert-${type}`;
-        window.setTimeout(() => elements.appAlert.classList.add('d-none'), 3500);
+        elements.appAlert.scrollIntoView({ block: 'nearest' });
+
+        if (alertTimer !== null) {
+            window.clearTimeout(alertTimer);
+        }
+
+        // Errors need more reading time, especially on small screens.
+        alertTimer = window.setTimeout(() => {
+            elements.appAlert.classList.add('d-none');
+            alertTimer = null;
+        }, type === 'danger' ? 10000 : 3500);
     }
 
     function showLogin() {
@@ -301,6 +367,35 @@
         renderShares();
     }
 
+    // Encrypting in the browser needs several copies of the file in memory; keep well
+    // below what a mid-range Android device can hold.
+    const MAX_ENCRYPT_BYTES = 32 * 1024 * 1024;
+
+    function safeFileName(file) {
+        const name = (file && file.name ? String(file.name) : '').split(/[\\/]/).pop();
+        return name && name.trim() !== '' ? name : `upload-${Date.now()}.bin`;
+    }
+
+    function assertUploadSize(file) {
+        if (state.maxUploadBytes && file.size > state.maxUploadBytes) {
+            throw new Error(`"${safeFileName(file)}" is ${formatBytes(file.size)}, which exceeds the ${formatBytes(state.maxUploadBytes)} limit.`);
+        }
+    }
+
+    // Safari/older Android WebViews lack Blob.arrayBuffer().
+    function readFileBytes(file) {
+        if (typeof file.arrayBuffer === 'function') {
+            return file.arrayBuffer();
+        }
+
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('Unable to read the selected file.'));
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
     function appendCommonFields(formData) {
         formData.set('type', elements.type.value);
         formData.set('title', elements.title.value.trim());
@@ -327,7 +422,9 @@
             } else if (type === 'link') {
                 formData.set('content', elements.link.value);
             } else if (elements.file.files[0]) {
-                formData.set('file', elements.file.files[0]);
+                const chosen = elements.file.files[0];
+                assertUploadSize(chosen);
+                formData.set('file', chosen, safeFileName(chosen));
             }
             return formData;
         }
@@ -353,13 +450,21 @@
             return formData;
         }
 
-        const plainBytes = new Uint8Array(await file.arrayBuffer());
+        assertUploadSize(file);
+
+        // In-browser encryption holds the plaintext, the ciphertext and the request copy
+        // in memory at once. Mobile browsers kill the tab well before desktop ones do.
+        if (file.size > MAX_ENCRYPT_BYTES) {
+            throw new Error(`In-browser encryption is limited to ${formatBytes(MAX_ENCRYPT_BYTES)} on this device. Upload the file without encryption or use a smaller file.`);
+        }
+
+        const plainBytes = new Uint8Array(await readFileBytes(file));
         const encryptedFile = await window.PsstCrypto.encryptBytes(plainBytes, password);
         const blob = new Blob([encryptedFile.bytes], { type: 'application/octet-stream' });
-        formData.set('file', blob, `${file.name}.psst`);
+        formData.set('file', blob, `${safeFileName(file)}.psst`);
         formData.set('encryption_meta', JSON.stringify({
             kind: 'file',
-            originalName: file.name,
+            originalName: safeFileName(file),
             originalMime: file.type || 'application/octet-stream',
             originalSize: file.size,
             crypto: encryptedFile.meta,
@@ -367,13 +472,27 @@
         return formData;
     }
 
+    function renderUploadLimitHint() {
+        if (!elements.fileHint) {
+            return;
+        }
+
+        elements.fileHint.textContent = state.maxUploadBytes
+            ? `Maximum size: ${formatBytes(state.maxUploadBytes)}.`
+            : '';
+    }
+
     async function saveShare(event) {
         event.preventDefault();
+        const originalLabel = elements.saveButton.textContent;
         elements.saveButton.disabled = true;
         try {
             const payload = await buildPayload();
             const action = state.editing ? 'update' : 'create';
             const query = state.editing ? `&uuid=${encodeURIComponent(state.editing.uuid)}` : '';
+            if (elements.type.value === 'file' && elements.file.files[0]) {
+                elements.saveButton.textContent = 'Uploading…';
+            }
             const result = await api(action, { method: 'POST', query, body: payload });
             setAlert(state.editing ? 'Share updated.' : 'Share created.');
             const savedShare = result && result.share ? result.share : null;
@@ -388,6 +507,7 @@
             setAlert(error.message || 'Unable to save share.', 'danger');
         } finally {
             elements.saveButton.disabled = false;
+            elements.saveButton.textContent = originalLabel;
         }
     }
 
@@ -612,6 +732,8 @@
 
         updateFieldVisibility();
         const status = await api('status');
+        state.maxUploadBytes = Number(status.max_upload_bytes || 0);
+        renderUploadLimitHint();
         if (status.authenticated) {
             showManage();
             await loadShares();

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/functions.php';
 
+psst_configure_error_output();
+
 try {
 	if (psst_is_iti_cors_request() && psst_method() === 'OPTIONS') {
 		psst_send_iti_cors_headers();
@@ -221,10 +223,37 @@ function psst_send_file(array $share, bool $asAttachment)
 	exit;
 }
 
-function psst_upload_respond(int $statusCode, string $message): void
+function psst_upload_respond(int $statusCode, string $message, array $extra = []): void
 {
-	http_response_code($statusCode);
-	header('Content-Type: text/plain; charset=utf-8');
+	psst_discard_output_buffers();
+
+	if (!headers_sent()) {
+		http_response_code($statusCode);
+	}
+
+	// The browser drop box posts with fetch() and expects JSON; curl/RouterOS get plain text.
+	if (psst_wants_json()) {
+		if (!headers_sent()) {
+			header('Content-Type: application/json; charset=utf-8');
+		}
+
+		$payload = array_merge(
+			['ok' => $statusCode >= 200 && $statusCode < 300, 'message' => $message],
+			$extra
+		);
+
+		if ($statusCode >= 400) {
+			$payload['error'] = $message;
+		}
+
+		echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+		exit;
+	}
+
+	if (!headers_sent()) {
+		header('Content-Type: text/plain; charset=utf-8');
+	}
+
 	echo $message . "\n";
 	exit;
 }
@@ -239,10 +268,19 @@ function psst_handle_upload(array $share): void
 		}
 	}
 
-	$maxBytes = (int) psst_config()['max_upload_bytes'];
+	$maxBytes = psst_max_upload_bytes();
 	$contentLength = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
-	if ($maxBytes > 0 && $contentLength > $maxBytes) {
-		psst_upload_respond(413, 'Upload exceeds the maximum allowed size.');
+
+	// Only pre-check raw bodies against the per-file limit. A multipart body carries
+	// boundary overhead and may hold several files, so it is checked per file below.
+	if ($maxBytes > 0 && $contentLength > $maxBytes && !psst_request_is_form_post()) {
+		psst_upload_respond(413, psst_upload_limit_message(), ['max_upload_bytes' => $maxBytes]);
+	}
+
+	// PHP silently drops the whole body once post_max_size is exceeded, which used to
+	// surface as a confusing "No file was received" / generic request failure.
+	if (psst_post_body_too_large()) {
+		psst_upload_respond(413, psst_upload_limit_message(), ['max_upload_bytes' => $maxBytes]);
 	}
 
 	$stored = [];
@@ -279,10 +317,11 @@ function psst_handle_upload(array $share): void
 				continue;
 			}
 			if ($file['error'] !== UPLOAD_ERR_OK) {
-				psst_upload_respond(400, 'Upload failed for one of the files.');
+				$status = in_array($file['error'], [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true) ? 413 : 400;
+				psst_upload_respond($status, psst_upload_error_message((int) $file['error']));
 			}
 			if ($maxBytes > 0 && (int) $file['size'] > $maxBytes) {
-				psst_upload_respond(413, 'Upload exceeds the maximum allowed size.');
+				psst_upload_respond(413, psst_upload_limit_message(), ['max_upload_bytes' => $maxBytes]);
 			}
 
 			$originalName = psst_sanitize_filename($file['name'] !== '' ? $file['name'] : psst_upload_fallback_name());
@@ -297,7 +336,7 @@ function psst_handle_upload(array $share): void
 		}
 
 		if ($stored === []) {
-			psst_upload_respond(400, 'No file was received.');
+			psst_upload_respond(400, 'No file was received. Choose a file and try again.');
 		}
 	} else {
 		$tmpPath = tempnam(sys_get_temp_dir(), 'psst_upload_');
@@ -344,6 +383,9 @@ function psst_handle_upload(array $share): void
 			if (!empty($_POST)) {
 				psst_upload_respond(400, 'Empty request body. Send raw data with header "Content-Type: application/octet-stream".');
 			}
+			if ($contentLength > 0) {
+				psst_upload_respond(413, psst_upload_limit_message(), ['max_upload_bytes' => $maxBytes]);
+			}
 			psst_upload_respond(400, 'Empty request body.');
 		}
 
@@ -356,15 +398,20 @@ function psst_handle_upload(array $share): void
 	}
 
 	$summary = [];
+	$files = [];
 	foreach ($stored as $file) {
 		$summary[] = sprintf(
 			'%s (%d bytes)',
 			$file['original_filename'],
 			(int) ($file['file_size'] ?? 0)
 		);
+		$files[] = [
+			'name' => $file['original_filename'],
+			'size' => (int) ($file['file_size'] ?? 0),
+		];
 	}
 
-	psst_upload_respond(201, 'Upload received: ' . implode(', ', $summary));
+	psst_upload_respond(201, 'Upload received: ' . implode(', ', $summary), ['files' => $files]);
 }
 
 function psst_upload_fallback_name(): string
@@ -415,7 +462,10 @@ function psst_render_upload_page(array $share): void
 	$providedToken = (string) ($_GET['t'] ?? '');
 	$tokenForUrl = $token !== '' ? ($providedToken !== '' ? $providedToken : null) : null;
 	$uploadUrl = psst_upload_url($share['uuid'], $tokenForUrl);
+	// Post back to the host the visitor actually used, not the configured base_url.
+	$formAction = psst_upload_form_action($share['uuid'], $tokenForUrl);
 	$requiresToken = $token !== '';
+	$maxBytes = psst_max_upload_bytes();
 
 	$curlMultipart = sprintf('curl -F "file=@/path/to/file" "%s"', $uploadUrl);
 	$curlRaw = sprintf('curl --data-binary @/path/to/file "%s&filename=file"', $uploadUrl);
@@ -433,21 +483,27 @@ function psst_render_upload_page(array $share): void
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title><?= psst_html($title) ?></title>
 	<link rel="stylesheet" href="css/bootstrap.min.css">
-	<link rel="stylesheet" href="css/psst.css">
+	<link rel="stylesheet" href="<?= psst_html(psst_asset('css/psst.css')) ?>">
 </head>
-<body class="bg-light min-vh-100 d-flex align-items-center py-4">
+<body class="bg-light min-vh-100 py-4">
 	<main class="container" style="max-width: 720px">
-		<section class="bg-white border rounded p-4">
+		<section class="bg-white border rounded p-3 p-sm-4">
 			<h1 class="h4 mb-3"><?= psst_html($title) ?></h1>
-			<p class="text-muted">Upload a file to this drop box. You can use the browser form below or one of the command-line snippets.</p>
+			<p class="text-muted">Upload a file to this drop box. You can use the form below or one of the command-line snippets.</p>
 			<?php if ($requiresToken && $providedToken === ''): ?>
 				<div class="alert alert-warning py-2">This drop box requires an upload token. Append <code>&amp;t=YOUR_TOKEN</code> to the URL.</div>
 			<?php endif; ?>
 
-			<form method="post" enctype="multipart/form-data" action="<?= psst_html($uploadUrl) ?>" class="mb-4">
+			<form id="upload-form" method="post" enctype="multipart/form-data" action="<?= psst_html($formAction) ?>"
+				class="mb-4" data-max-bytes="<?= (int) $maxBytes ?>">
 				<label class="form-label" for="file">File</label>
-				<input class="form-control mb-3" id="file" name="file" type="file" required>
-				<button class="btn btn-primary" type="submit">Upload</button>
+				<input class="form-control mb-2" id="file" name="file" type="file" multiple required>
+				<div class="form-text mb-3" id="upload-hint">Maximum size: <?= psst_html(psst_format_bytes($maxBytes)) ?> per file.</div>
+				<div class="progress mb-3 d-none" id="upload-progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100">
+					<div class="progress-bar progress-bar-striped progress-bar-animated" id="upload-progress-bar" style="width: 0%">0%</div>
+				</div>
+				<button class="btn btn-primary w-100 w-sm-auto" id="upload-button" type="submit">Upload</button>
+				<div class="alert mt-3 mb-0 d-none" id="upload-status" role="status"></div>
 			</form>
 
 			<h2 class="h6">Linux (multipart)</h2>
@@ -459,7 +515,10 @@ function psst_render_upload_page(array $share): void
 			<h2 class="h6">MikroTik RouterOS</h2>
 			<pre class="bg-light border rounded p-2 small"><code><?= psst_html($mikrotik) ?></code></pre>
 		</section>
+
+		<?php psst_render_footer('mt-3'); ?>
 	</main>
+	<script src="<?= psst_html(psst_asset('js/upload-form.js')) ?>"></script>
 </body>
 </html>
 	<?php
@@ -481,6 +540,7 @@ function psst_render_secret_prompt(array $share)
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title><?= psst_html($title) ?></title>
 	<link rel="stylesheet" href="css/bootstrap.min.css">
+	<link rel="stylesheet" href="<?= psst_html(psst_asset('css/psst.css')) ?>">
 </head>
 <body class="bg-light min-vh-100 d-flex align-items-center">
 	<main class="container">
@@ -493,6 +553,8 @@ function psst_render_secret_prompt(array $share)
 			<input class="form-control mb-3" id="secret_code" name="secret_code" type="password" autocomplete="current-password" autofocus required>
 			<button class="btn btn-primary w-100" type="submit">Open</button>
 		</form>
+
+		<?php psst_render_footer('mt-3'); ?>
 	</main>
 </body>
 </html>
@@ -512,7 +574,7 @@ function psst_render_encrypted_share(array $share)
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title><?= psst_html($share['title'] ?: 'Encrypted Share') ?></title>
 	<link rel="stylesheet" href="css/bootstrap.min.css">
-	<link rel="stylesheet" href="css/psst.css">
+	<link rel="stylesheet" href="<?= psst_html(psst_asset('css/psst.css')) ?>">
 </head>
 <body class="bg-light min-vh-100 d-flex align-items-center">
 	<main class="container">
@@ -524,10 +586,12 @@ function psst_render_encrypted_share(array $share)
 			<div id="decrypt-alert" class="alert alert-danger mt-3 mb-0 d-none"></div>
 			<div id="decrypted-output" class="mt-3 d-none"></div>
 		</section>
+
+		<?php psst_render_footer('mt-3'); ?>
 	</main>
 	<script src="js/bootstrap.bundle.min.js"></script>
-	<script src="js/psst-crypto.js"></script>
-	<script src="js/share-view.js"></script>
+	<script src="<?= psst_html(psst_asset('js/psst-crypto.js')) ?>"></script>
+	<script src="<?= psst_html(psst_asset('js/share-view.js')) ?>"></script>
 </body>
 </html>
 	<?php
@@ -546,11 +610,14 @@ function psst_render_message(string $title, string $message, int $statusCode)
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title><?= psst_html($title) ?></title>
 	<link rel="stylesheet" href="css/bootstrap.min.css">
+	<link rel="stylesheet" href="<?= psst_html(psst_asset('css/psst.css')) ?>">
 </head>
 <body class="bg-light min-vh-100 d-flex align-items-center">
 	<main class="container text-center">
 		<h1 class="h3"><?= psst_html($title) ?></h1>
-		<p class="text-muted mb-0"><?= psst_html($message) ?></p>
+		<p class="text-muted"><?= psst_html($message) ?></p>
+
+		<?php psst_render_footer(); ?>
 	</main>
 </body>
 </html>

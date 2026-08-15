@@ -10,7 +10,7 @@ require_once __DIR__ . '/functions.php';
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PSST</title>
     <link rel="stylesheet" href="css/bootstrap.min.css">
-    <link rel="stylesheet" href="css/psst.css">
+    <link rel="stylesheet" href="<?= psst_html(psst_asset('css/psst.css')) ?>">
 </head>
 <body class="bg-light" data-base-url="<?= psst_html(psst_base_url()) ?>">
     <div id="app" class="container-fluid py-3 py-lg-4">
@@ -74,7 +74,8 @@ require_once __DIR__ . '/functions.php';
 
                         <div id="file-fields" class="d-none">
                             <label class="form-label" for="share-file">File</label>
-                            <input class="form-control mb-3" id="share-file" type="file">
+                            <input class="form-control" id="share-file" type="file">
+                            <div class="form-text mb-3" id="share-file-hint"></div>
                         </div>
 
                         <div id="upload-fields" class="d-none">
@@ -182,11 +183,13 @@ require_once __DIR__ . '/functions.php';
                 </div>
             </div>
         </main>
+
+        <?php psst_render_footer('mt-4'); ?>
     </div>
     <script src="js/bootstrap.bundle.min.js"></script>
-    <script src="js/psst-crypto.js"></script>
+    <script src="<?= psst_html(psst_asset('js/psst-crypto.js')) ?>"></script>
     <script src="js/qrcode-generator.js"></script>
     <script src="js/qr-lite.js"></script>
-    <script src="js/manage.js?v=<?= filemtime(__DIR__ . '/js/manage.js') ?>"></script>
+    <script src="<?= psst_html(psst_asset('js/manage.js')) ?>"></script>
 </body>
 </html>

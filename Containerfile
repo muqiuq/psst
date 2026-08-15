@@ -5,6 +5,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && a2enmod rewrite headers
 
+# Raise the PHP upload limits; the defaults (2M/8M) reject most phone photos and videos.
+COPY php/psst.ini /usr/local/etc/php/conf.d/zz-psst.ini
+
 WORKDIR /var/www/html
 
 COPY app/ /var/www/html/

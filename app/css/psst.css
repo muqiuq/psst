@@ -40,3 +40,24 @@ body {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+
+.psst-footer {
+    padding: 0.75rem 0;
+    line-height: 1.9;
+}
+
+.psst-footer a {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: rgba(31, 41, 51, 0.35);
+}
+
+.psst-footer a:hover,
+.psst-footer a:focus {
+    color: #0d6efd;
+}
+
+.psst-footer-sep {
+    margin: 0 0.5rem;
+    opacity: 0.5;
+}

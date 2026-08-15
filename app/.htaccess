@@ -11,3 +11,24 @@ DirectoryIndex index.php
     Header always set X-Content-Type-Options "nosniff"
     Header always set Referrer-Policy "same-origin"
 </IfModule>
+
+# Upload limits for mod_php deployments. PHP's 2M/8M defaults reject most photos and
+# videos picked on a phone. FPM/CGI setups use .user.ini, the container uses php/psst.ini.
+<IfModule mod_php.c>
+    php_value upload_max_filesize 128M
+    php_value post_max_size 136M
+    php_value max_input_time 600
+    php_flag display_errors Off
+</IfModule>
+<IfModule mod_php8.c>
+    php_value upload_max_filesize 128M
+    php_value post_max_size 136M
+    php_value max_input_time 600
+    php_flag display_errors Off
+</IfModule>
+<IfModule mod_php7.c>
+    php_value upload_max_filesize 128M
+    php_value post_max_size 136M
+    php_value max_input_time 600
+    php_flag display_errors Off
+</IfModule>

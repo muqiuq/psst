@@ -4,6 +4,50 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/models.php';
 
+/**
+ * Application version. Bump this on release; it is shown in the footer and is also
+ * used to cache-bust the vendored CSS/JS so browsers pick up new assets after a deploy.
+ */
+define('PSST_VERSION', '1.1.0');
+
+const PSST_REPO_URL = 'https://github.com/muqiuq/psst';
+const PSST_AUTHOR_NAME = 'Philipp Albrecht';
+const PSST_AUTHOR_URL = 'https://uisa.ch';
+
+function psst_version(): string
+{
+    return PSST_VERSION;
+}
+
+/**
+ * Cache-busting suffix for a static asset below app/.
+ * Falls back to the app version when the file cannot be stat'ed.
+ */
+function psst_asset(string $relativePath): string
+{
+    $path = __DIR__ . '/' . ltrim($relativePath, '/');
+    $stamp = is_file($path) ? (string) filemtime($path) : PSST_VERSION;
+
+    return $relativePath . '?v=' . rawurlencode($stamp);
+}
+
+/**
+ * Shared footer: version, repository link and author credit.
+ */
+function psst_render_footer(string $extraClass = ''): void
+{
+    $classes = trim('psst-footer text-center text-muted small ' . $extraClass);
+    ?>
+<footer class="<?= psst_html($classes) ?>">
+    <span class="text-nowrap">PSST v<?= psst_html(psst_version()) ?></span>
+    <span class="psst-footer-sep">·</span>
+    <a class="text-nowrap" href="<?= psst_html(PSST_REPO_URL) ?>" target="_blank" rel="noopener noreferrer">GitHub</a>
+    <span class="psst-footer-sep">·</span>
+    <span class="text-nowrap">by <a href="<?= psst_html(PSST_AUTHOR_URL) ?>" target="_blank" rel="noopener noreferrer"><?= psst_html(PSST_AUTHOR_NAME) ?></a></span>
+</footer>
+    <?php
+}
+
 function psst_start_session(): void
 {
     $config = psst_config();
@@ -20,10 +64,36 @@ function psst_start_session(): void
     }
 }
 
+/**
+ * Keep PHP notices/warnings out of the response body. A stray warning (for example
+ * "POST Content-Length exceeds the limit") would otherwise corrupt JSON responses
+ * and clients could only report a generic "request failed".
+ */
+function psst_configure_error_output(): void
+{
+    ini_set('display_errors', '0');
+    ini_set('display_startup_errors', '0');
+    ini_set('log_errors', '1');
+}
+
+function psst_discard_output_buffers(): void
+{
+    while (ob_get_level() > 0) {
+        if (!@ob_end_clean()) {
+            break;
+        }
+    }
+}
+
 function psst_json(array $payload, int $statusCode = 200)
 {
-    http_response_code($statusCode);
-    header('Content-Type: application/json; charset=utf-8');
+    psst_discard_output_buffers();
+
+    if (!headers_sent()) {
+        http_response_code($statusCode);
+        header('Content-Type: application/json; charset=utf-8');
+    }
+
     echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -191,6 +261,23 @@ function psst_upload_url(string $uuid, ?string $token = null): string
     return $url;
 }
 
+/**
+ * Same-origin, relative target for the browser upload form.
+ *
+ * The absolute psst_upload_url() is built from the configured base_url (often
+ * http://localhost:8081). A phone opening the drop box over the LAN or a reverse proxy
+ * would post to its own localhost and fail, so form/XHR targets must stay relative.
+ */
+function psst_upload_form_action(string $uuid, ?string $token = null): string
+{
+    $action = 'index.php?id=' . rawurlencode($uuid);
+    if ($token !== null && $token !== '') {
+        $action .= '&t=' . rawurlencode($token);
+    }
+
+    return $action;
+}
+
 function psst_random_token(int $bytes = 16): string
 {
     return bin2hex(random_bytes(max(1, $bytes)));
@@ -236,10 +323,155 @@ function psst_normalize_iti_secret_code(?string $code): string
 
 function psst_sanitize_filename(string $filename): string
 {
+    // Mobile pickers (Android "Documents"/Photos) may hand over a path or an empty name.
+    $filename = str_replace('\\', '/', $filename);
+    $filename = basename($filename);
     $filename = preg_replace('/[^A-Za-z0-9._-]+/', '_', $filename) ?? 'file';
     $filename = trim($filename, '._');
 
+    if (strlen($filename) > 150) {
+        $extension = (string) pathinfo($filename, PATHINFO_EXTENSION);
+        $suffix = $extension !== '' ? '.' . substr($extension, 0, 12) : '';
+        $filename = substr($filename, 0, 150 - strlen($suffix)) . $suffix;
+    }
+
     return $filename !== '' ? $filename : 'file';
+}
+
+function psst_ini_bytes(string $value): int
+{
+    $value = trim($value);
+    if ($value === '' || $value === '-1') {
+        return 0;
+    }
+
+    $unit = strtolower(substr($value, -1));
+    $number = (float) $value;
+
+    if ($unit === 'g') {
+        $number *= 1024 * 1024 * 1024;
+    } elseif ($unit === 'm') {
+        $number *= 1024 * 1024;
+    } elseif ($unit === 'k') {
+        $number *= 1024;
+    }
+
+    return (int) $number;
+}
+
+function psst_php_post_limit_bytes(): int
+{
+    return psst_ini_bytes((string) ini_get('post_max_size'));
+}
+
+function psst_php_file_limit_bytes(): int
+{
+    return psst_ini_bytes((string) ini_get('upload_max_filesize'));
+}
+
+/**
+ * Effective per-file limit: the smallest of the configured app limit and the PHP limits.
+ * Reporting the real ceiling lets clients fail fast with a useful message instead of
+ * having PHP silently discard an oversized request body.
+ */
+function psst_max_upload_bytes(): int
+{
+    $limits = [];
+
+    foreach ([(int) psst_config()['max_upload_bytes'], psst_php_file_limit_bytes(), psst_php_post_limit_bytes()] as $limit) {
+        if ($limit > 0) {
+            $limits[] = $limit;
+        }
+    }
+
+    return $limits === [] ? 0 : (int) min($limits);
+}
+
+function psst_format_bytes(int $bytes): string
+{
+    if ($bytes <= 0) {
+        return 'unlimited';
+    }
+
+    $units = ['B', 'KB', 'MB', 'GB'];
+    $value = (float) $bytes;
+    $index = 0;
+
+    while ($value >= 1024 && $index < count($units) - 1) {
+        $value /= 1024;
+        $index += 1;
+    }
+
+    return ($value >= 10 || $index === 0)
+        ? sprintf('%d %s', round($value), $units[$index])
+        : sprintf('%.1f %s', $value, $units[$index]);
+}
+
+function psst_request_is_form_post(): bool
+{
+    $contentType = strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? ''));
+
+    return strpos($contentType, 'multipart/form-data') !== false
+        || strpos($contentType, 'application/x-www-form-urlencoded') !== false;
+}
+
+/**
+ * PHP throws the whole request body away when post_max_size is exceeded, leaving
+ * $_POST and $_FILES empty with no error code. Detect that case explicitly.
+ */
+function psst_post_body_too_large(): bool
+{
+    $method = psst_method();
+    if ($method !== 'POST' && $method !== 'PUT') {
+        return false;
+    }
+
+    $length = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
+    if ($length <= 0) {
+        return false;
+    }
+
+    $limit = psst_php_post_limit_bytes();
+    if ($limit > 0 && $length > $limit) {
+        return true;
+    }
+
+    return $_POST === [] && $_FILES === [] && psst_request_is_form_post();
+}
+
+function psst_upload_limit_message(): string
+{
+    return sprintf('The upload is too large. The maximum accepted size is %s.', psst_format_bytes(psst_max_upload_bytes()));
+}
+
+function psst_upload_error_message(int $errorCode): string
+{
+    switch ($errorCode) {
+        case UPLOAD_ERR_INI_SIZE:
+        case UPLOAD_ERR_FORM_SIZE:
+            return psst_upload_limit_message();
+        case UPLOAD_ERR_PARTIAL:
+            return 'The upload was interrupted before it finished. Check the connection and try again.';
+        case UPLOAD_ERR_NO_FILE:
+            return 'No file was selected.';
+        case UPLOAD_ERR_NO_TMP_DIR:
+            return 'The server has no writable temporary directory for uploads.';
+        case UPLOAD_ERR_CANT_WRITE:
+            return 'The server could not write the uploaded file to disk.';
+        case UPLOAD_ERR_EXTENSION:
+            return 'A PHP extension blocked the upload.';
+        default:
+            return 'The upload failed.';
+    }
+}
+
+function psst_wants_json(): bool
+{
+    if (stripos((string) ($_SERVER['HTTP_ACCEPT'] ?? ''), 'application/json') !== false) {
+        return true;
+    }
+
+    return strtolower((string) ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '')) === 'xmlhttprequest';
 }
 
 function psst_validate_uuid(string $uuid): bool
@@ -387,6 +619,13 @@ function psst_enforce_rate_limit(string $eventType, int $limit): void
 {
     if (!psst_rate_limit_check($eventType, $limit)) {
         http_response_code(429);
+
+        if (psst_wants_json()) {
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['error' => 'Too many requests. Wait a moment and try again.'], JSON_UNESCAPED_SLASHES);
+            exit;
+        }
+
         header('Content-Type: text/plain; charset=utf-8');
         echo 'Too many requests.';
         exit;
