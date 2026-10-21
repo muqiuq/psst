@@ -8,7 +8,7 @@ PSST is a small vanilla PHP sharing tool for Apache. It lets an admin create sho
 - Responsive management UI with vendored Bootstrap 5
 - SQLite database with automatic migrations
 - Apache `.htaccess` protection for stored files and runtime data
-- Text, link, and file shares with random UUID URLs
+- Text, Markdown, link, and file shares with random UUID URLs; Markdown is rendered as a formatted page (dependency-free, raw HTML is shown as text)
 - Expiry dates and view limits per share (a limit of 1 is burn after reading); used-up shares are deleted
 - Upload drop boxes with an optional token, a per-drop-box storage limit, an optional closing date, multi-file selection, and upload progress
 - Mobile-friendly uploads with explicit size limits and readable error messages
@@ -21,6 +21,7 @@ PSST is a small vanilla PHP sharing tool for Apache. It lets an admin create sho
 - Brazilian ITI validator JSON response support
 - Version number, repository link, and author credit in the page footer
 - `health.php` JSON health check (PHP extensions, database, writable data folders)
+- `api.php` for other applications (for example PLM) to create and manage shares with revocable API keys; the documentation is in the manager under **API**
 - Podman-based local testing with Apache and PHP
 
 ## 🔧 Quick start
@@ -93,6 +94,15 @@ Settings missing from an older `config.php` fall back to the defaults in `app/db
 If PSST runs behind a reverse proxy, list the proxy in `trusted_proxies` (IPs or CIDR ranges, for
 example `['10.0.0.5', '192.168.0.0/16']`). Otherwise every visitor shares the proxy's IP, so rate
 limits and the login block apply to everyone at once.
+
+### API for other applications
+
+Other applications can create shares through `app/api.php`. Create an API key in the manager
+under **API**; the key is shown once and stored only as a hash. Each key can only read and
+delete the shares it created. The full documentation opens from the same dialog
+(`api-docs.php`, manager login required). Send the key in the `Authorization: Bearer` header and
+use HTTPS. After `max_failed_api_auth_per_window` failed attempts in an hour, the client IP is
+refused until the hour is over.
 
 ### Expiry and view limits
 

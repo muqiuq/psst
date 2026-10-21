@@ -3,12 +3,13 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/models.php';
+require_once __DIR__ . '/markdown.php';
 
 /**
  * Application version. Bump this on release; it is shown in the footer and is also
  * used to cache-bust the vendored CSS/JS so browsers pick up new assets after a deploy.
  */
-define('PSST_VERSION', '1.2.0');
+define('PSST_VERSION', '1.3.0');
 
 const PSST_REPO_URL = 'https://github.com/muqiuq/psst';
 const PSST_AUTHOR_NAME = 'Philipp Albrecht';
@@ -665,6 +666,7 @@ function psst_manager_share(array $share): array
         ? psst_iti_qr_url($share['uuid'])
         : null;
     $public['has_secret_code'] = !empty($share['secret_code_hash']);
+    $public['api_key_name'] = $share['api_key_name'] ?? null;
     $public['max_views'] = $share['max_views'] !== null ? (int) $share['max_views'] : null;
     $public['view_count'] = (int) ($share['view_count'] ?? 0);
 
@@ -697,6 +699,36 @@ function psst_manager_upload_file(array $file): array
         'download_url' => 'manage-api.php?action=upload_download&uuid='
             . rawurlencode($file['share_uuid'] ?? '') . '&file=' . rawurlencode($file['uuid']),
     ];
+}
+
+function psst_manager_api_key(array $key): array
+{
+    return [
+        'id' => (int) $key['id'],
+        'name' => $key['name'],
+        'prefix' => $key['token_prefix'],
+        'share_count' => (int) ($key['share_count'] ?? 0),
+        'created_at' => psst_iso_sqlite_time($key['created_at']),
+        'last_used_at' => psst_iso_timestamp($key['last_used_at']),
+        'revoked_at' => psst_iso_timestamp($key['revoked_at']),
+    ];
+}
+
+/**
+ * Strict policy for pages that show rendered Markdown: no inline script or style, so
+ * even a renderer bug could not run code. Images may come from https and data: URLs.
+ */
+function psst_send_markdown_page_headers(): void
+{
+    header("Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src https: data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+    header('X-Content-Type-Options: nosniff');
+}
+
+function psst_markdown_filename(array $share): string
+{
+    $name = psst_sanitize_filename($share['title'] !== '' ? $share['title'] : 'document');
+
+    return preg_match('/\.(md|markdown)$/i', $name) === 1 ? $name : $name . '.md';
 }
 
 function psst_share_is_expired(array $share): bool
@@ -823,4 +855,253 @@ function psst_enforce_rate_limit(string $eventType, int $limit): void
     }
 
     psst_rate_limit_record($eventType);
+}
+
+const PSST_SHARE_TYPES = ['text', 'markdown', 'link', 'file', 'upload'];
+
+function psst_limit_chars(string $value, int $max): string
+{
+    // Counts characters, not bytes, without needing mbstring.
+    return preg_match('/^.{0,' . $max . '}/us', $value, $match) === 1 ? $match[0] : substr($value, 0, $max);
+}
+
+/**
+ * Builds a share row from the request (JSON or form fields, plus $_FILES['file']).
+ * Used by the manager API and by api.php; answers 400 itself on invalid input.
+ */
+function psst_build_share_payload(?array $existing): array
+{
+    $data = psst_request_data();
+    $uuid = $existing['uuid'] ?? psst_uuid();
+    $type = trim((string) ($data['type'] ?? $existing['type'] ?? ''));
+
+    if (!in_array($type, PSST_SHARE_TYPES, true)) {
+        psst_json(['error' => 'Share type must be text, markdown, link, file, or upload.'], 400);
+    }
+
+    $isEncrypted = psst_bool($data['is_encrypted'] ?? $existing['is_encrypted'] ?? false);
+    $content = array_key_exists('content', $data) ? (string) $data['content'] : ($existing['content'] ?? null);
+    $originalFilename = $existing['original_filename'] ?? null;
+    $storedFilename = $existing['stored_filename'] ?? null;
+    $mimeType = $existing['mime_type'] ?? null;
+    $fileSize = $existing['file_size'] ?? null;
+    $uploadToken = $existing['upload_token'] ?? null;
+
+    if ($type === 'text') {
+        if (!$isEncrypted && trim((string) $content) === '') {
+            psst_json(['error' => 'Text shares require content.'], 400);
+        }
+        $originalFilename = null;
+        $storedFilename = null;
+        $mimeType = 'text/plain; charset=utf-8';
+        $fileSize = $content !== null ? strlen($content) : null;
+    }
+
+    if ($type === 'markdown') {
+        // The share page renders the Markdown on the server, which needs the plain text.
+        if ($isEncrypted) {
+            psst_json(['error' => 'Markdown shares cannot be encrypted.'], 400);
+        }
+        if (trim((string) $content) === '') {
+            psst_json(['error' => 'Markdown shares require content.'], 400);
+        }
+        $originalFilename = null;
+        $storedFilename = null;
+        $mimeType = 'text/markdown; charset=utf-8';
+        $fileSize = strlen((string) $content);
+    }
+
+    if ($type === 'link') {
+        if (!$isEncrypted && !filter_var($content, FILTER_VALIDATE_URL)) {
+            psst_json(['error' => 'Link shares require a valid URL.'], 400);
+        }
+        $originalFilename = null;
+        $storedFilename = null;
+        $mimeType = 'text/uri-list';
+        $fileSize = $content !== null ? strlen($content) : null;
+    }
+
+    if ($type === 'file') {
+        $file = $_FILES['file'] ?? null;
+        $errorCode = is_array($file) ? (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+
+        if ($errorCode === UPLOAD_ERR_OK) {
+            $maxBytes = psst_max_upload_bytes();
+            if ($maxBytes > 0 && (int) $file['size'] > $maxBytes) {
+                psst_json(['error' => psst_upload_limit_message(), 'max_upload_bytes' => $maxBytes], 413);
+            }
+
+            $originalFilename = psst_sanitize_filename((string) $file['name']);
+            $storedFilename = $uuid . '-' . bin2hex(random_bytes(8)) . '-' . $originalFilename;
+            $mimeType = psst_safe_mime((string) $file['type']);
+            $fileSize = (int) $file['size'];
+            $target = psst_stored_file_path($storedFilename);
+
+            if (!move_uploaded_file((string) $file['tmp_name'], $target)) {
+                psst_json(['error' => 'Unable to store uploaded file.'], 500);
+            }
+        } elseif ($errorCode !== UPLOAD_ERR_NO_FILE) {
+            $status = in_array($errorCode, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true) ? 413 : 400;
+            psst_json(['error' => psst_upload_error_message($errorCode)], $status);
+        } elseif (!$existing) {
+            psst_json(['error' => 'File shares require an uploaded file.'], 400);
+        }
+
+        $content = null;
+    }
+
+    if ($type === 'upload') {
+        // Upload shares act as a write inbox: no inline content or owner-uploaded file.
+        $content = null;
+        $originalFilename = null;
+        $storedFilename = null;
+        $mimeType = null;
+        $fileSize = null;
+        $isEncrypted = false;
+
+        $requireToken = psst_bool($data['require_token'] ?? ($uploadToken !== null && $uploadToken !== ''));
+        if ($requireToken) {
+            // Keep an existing token when editing; otherwise mint a fresh one.
+            if ($uploadToken === null || $uploadToken === '') {
+                $uploadToken = psst_random_token();
+            }
+        } else {
+            $uploadToken = null;
+        }
+    } else {
+        $uploadToken = null;
+    }
+
+    $secretCodeHash = $existing['secret_code_hash'] ?? null;
+    if (array_key_exists('secret_code', $data)) {
+        $secretCode = trim((string) $data['secret_code']);
+        $secretCodeHash = $secretCode !== '' ? psst_hash_secret($secretCode) : null;
+    }
+
+    return [
+        'uuid' => $uuid,
+        'type' => $type,
+        'title' => psst_limit_chars(trim((string) ($data['title'] ?? $existing['title'] ?? '')), 160),
+        'content' => $content,
+        'original_filename' => $originalFilename,
+        'stored_filename' => $storedFilename,
+        'mime_type' => $mimeType,
+        'file_size' => $fileSize,
+        'is_encrypted' => $isEncrypted,
+        'encryption_meta' => psst_normalize_meta($data['encryption_meta'] ?? $existing['encryption_meta'] ?? null),
+        'secret_code_hash' => $secretCodeHash,
+        'iti_secret_code_hash' => null,
+        'iti_secret_code' => psst_normalize_iti_secret_code($existing['iti_secret_code'] ?? null),
+        'upload_token' => $uploadToken,
+        'expires_at' => psst_payload_expires_at($data, $existing),
+        // A drop box is closed by its expiry; view limits do not apply to it.
+        'max_views' => $type === 'upload' ? null : psst_payload_max_views($data, $existing),
+        'upload_quota_bytes' => $type === 'upload' ? psst_payload_upload_quota($data, $existing) : null,
+    ];
+}
+
+function psst_payload_expires_at(array $data, ?array $existing): ?int
+{
+    $current = isset($existing['expires_at']) ? (int) $existing['expires_at'] : null;
+    if (!array_key_exists('expires_at', $data)) {
+        return $current;
+    }
+
+    $value = trim((string) $data['expires_at']);
+    if ($value === '') {
+        return null;
+    }
+
+    $timestamp = ctype_digit($value) ? (int) $value : strtotime($value);
+    if ($timestamp === false) {
+        psst_json(['error' => 'The expiry date is not valid.'], 400);
+    }
+
+    if ($timestamp !== $current && $timestamp <= time()) {
+        psst_json(['error' => 'The expiry must be in the future.'], 400);
+    }
+
+    return $timestamp;
+}
+
+function psst_payload_max_views(array $data, ?array $existing): ?int
+{
+    $current = isset($existing['max_views']) ? (int) $existing['max_views'] : null;
+    if (!array_key_exists('max_views', $data)) {
+        return $current;
+    }
+
+    $value = trim((string) $data['max_views']);
+    if ($value === '') {
+        return null;
+    }
+
+    if (!ctype_digit($value) || (int) $value < 1 || (int) $value > 1000000) {
+        psst_json(['error' => 'The view limit must be a whole number of at least 1.'], 400);
+    }
+
+    $maxViews = (int) $value;
+    $viewCount = (int) ($existing['view_count'] ?? 0);
+    if ($maxViews !== $current && $maxViews <= $viewCount) {
+        psst_json(['error' => sprintf('This share was already viewed %d times. Choose a higher view limit.', $viewCount)], 400);
+    }
+
+    return $maxViews;
+}
+
+function psst_payload_upload_quota(array $data, ?array $existing): ?int
+{
+    if (!array_key_exists('upload_quota_bytes', $data)) {
+        if ($existing && $existing['type'] === 'upload') {
+            return $existing['upload_quota_bytes'] !== null ? (int) $existing['upload_quota_bytes'] : null;
+        }
+
+        return (int) psst_config()['default_upload_quota_bytes'] ?: null;
+    }
+
+    $value = trim((string) $data['upload_quota_bytes']);
+    if ($value === '') {
+        return null;
+    }
+
+    if (!ctype_digit($value) || (int) $value < 1) {
+        psst_json(['error' => 'The storage limit must be a positive number.'], 400);
+    }
+
+    return (int) $value;
+}
+
+function psst_page_start(string $title, string $bodyClass = 'bg-light min-vh-100 d-flex align-items-center'): void
+{
+    header('Content-Type: text/html; charset=utf-8');
+    ?>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title><?= psst_html($title) ?></title>
+    <link rel="stylesheet" href="css/bootstrap.min.css">
+    <link rel="stylesheet" href="<?= psst_html(psst_asset('css/psst.css')) ?>">
+</head>
+<body class="<?= psst_html($bodyClass) ?>">
+    <?php
+}
+
+/**
+ * @param string[] $scripts asset paths below app/
+ */
+function psst_page_end(array $scripts = []): void
+{
+    foreach ($scripts as $script) {
+        ?>
+    <script src="<?= psst_html(psst_asset($script)) ?>"></script>
+        <?php
+    }
+    ?>
+</body>
+</html>
+    <?php
+    exit;
 }

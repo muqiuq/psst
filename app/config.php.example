@@ -21,6 +21,7 @@ return [
     'rate_limit_window_seconds' => 3600,
     'max_requests_per_window' => 50,
     'max_failed_secret_attempts_per_window' => 10,
+    'max_failed_api_auth_per_window' => 10,
     'login_delay_seconds' => 3,
     'max_failed_login_attempts' => 10,
     'login_block_seconds' => 86400,

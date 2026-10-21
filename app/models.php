@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 
+// Shares carry the name of the API key that created them, for the manager list.
+const PSST_SHARE_SELECT = 'SELECT shares.*, api_keys.name AS api_key_name FROM shares
+    LEFT JOIN api_keys ON api_keys.id = shares.api_key_id';
+
 function psst_share_find_by_uuid(string $uuid): ?array
 {
-    $statement = psst_db()->prepare('SELECT * FROM shares WHERE uuid = :uuid');
+    $statement = psst_db()->prepare(PSST_SHARE_SELECT . ' WHERE shares.uuid = :uuid');
     $statement->execute(['uuid' => $uuid]);
     $share = $statement->fetch();
 
@@ -16,7 +20,7 @@ function psst_share_find_by_uuid(string $uuid): ?array
 function psst_share_list(): array
 {
     return psst_db()
-        ->query('SELECT * FROM shares ORDER BY created_at DESC, id DESC')
+        ->query(PSST_SHARE_SELECT . ' ORDER BY shares.created_at DESC, shares.id DESC')
         ->fetchAll();
 }
 
@@ -25,11 +29,11 @@ function psst_share_create(array $share): array
     $sql = 'INSERT INTO shares (
         uuid, type, title, content, original_filename, stored_filename, mime_type,
         file_size, is_encrypted, encryption_meta, secret_code_hash, iti_secret_code_hash, iti_secret_code, upload_token,
-        expires_at, max_views, upload_quota_bytes
+        expires_at, max_views, upload_quota_bytes, api_key_id
     ) VALUES (
         :uuid, :type, :title, :content, :original_filename, :stored_filename, :mime_type,
         :file_size, :is_encrypted, :encryption_meta, :secret_code_hash, :iti_secret_code_hash, :iti_secret_code, :upload_token,
-        :expires_at, :max_views, :upload_quota_bytes
+        :expires_at, :max_views, :upload_quota_bytes, :api_key_id
     )';
 
     $statement = psst_db()->prepare($sql);
@@ -51,6 +55,7 @@ function psst_share_create(array $share): array
         'expires_at' => $share['expires_at'] ?? null,
         'max_views' => $share['max_views'] ?? null,
         'upload_quota_bytes' => $share['upload_quota_bytes'] ?? null,
+        'api_key_id' => $share['api_key_id'] ?? null,
     ]);
 
     return psst_share_find_by_uuid($share['uuid']);
@@ -302,4 +307,71 @@ function psst_prune_old_events(int $requestsBefore, int $failedLoginsBefore): vo
         'requests_before' => $requestsBefore,
         'failed_logins_before' => $failedLoginsBefore,
     ]);
+}
+
+function psst_api_key_hash(string $token): string
+{
+    // Keys are 256-bit random values, so a plain SHA-256 is enough; no slow hash needed.
+    return hash('sha256', $token);
+}
+
+/**
+ * @return array{key: array, token: string} the token is only available here, once
+ */
+function psst_api_key_create(string $name): array
+{
+    $token = 'psst_' . rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+
+    $statement = psst_db()->prepare(
+        'INSERT INTO api_keys (name, token_hash, token_prefix) VALUES (:name, :token_hash, :token_prefix)'
+    );
+    $statement->execute([
+        'name' => $name,
+        'token_hash' => psst_api_key_hash($token),
+        'token_prefix' => substr($token, 0, 12),
+    ]);
+
+    return ['key' => psst_api_key_find((int) psst_db()->lastInsertId()), 'token' => $token];
+}
+
+function psst_api_key_find(int $id): ?array
+{
+    $statement = psst_db()->prepare('SELECT * FROM api_keys WHERE id = :id');
+    $statement->execute(['id' => $id]);
+    $key = $statement->fetch();
+
+    return $key ?: null;
+}
+
+function psst_api_key_find_active_by_token(string $token): ?array
+{
+    $statement = psst_db()->prepare('SELECT * FROM api_keys WHERE token_hash = :token_hash AND revoked_at IS NULL');
+    $statement->execute(['token_hash' => psst_api_key_hash($token)]);
+    $key = $statement->fetch();
+
+    return $key ?: null;
+}
+
+function psst_api_key_list(): array
+{
+    return psst_db()
+        ->query(
+            'SELECT api_keys.*, (SELECT COUNT(*) FROM shares WHERE shares.api_key_id = api_keys.id) AS share_count
+             FROM api_keys ORDER BY revoked_at IS NOT NULL, created_at DESC, id DESC'
+        )
+        ->fetchAll();
+}
+
+function psst_api_key_touch(int $id): void
+{
+    $statement = psst_db()->prepare('UPDATE api_keys SET last_used_at = :now WHERE id = :id');
+    $statement->execute(['now' => time(), 'id' => $id]);
+}
+
+function psst_api_key_revoke(int $id): bool
+{
+    $statement = psst_db()->prepare('UPDATE api_keys SET revoked_at = :now WHERE id = :id AND revoked_at IS NULL');
+    $statement->execute(['now' => time(), 'id' => $id]);
+
+    return $statement->rowCount() === 1;
 }

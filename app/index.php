@@ -234,6 +234,17 @@ function psst_render_plain_share(array $share)
 		psst_send_file($share, $asAttachment);
 	}
 
+	if ($share['type'] === 'markdown') {
+		if (($_GET['download'] ?? '') === '1') {
+			$content = (string) $share['content'];
+			psst_send_file_headers('text/markdown', psst_markdown_filename($share), strlen($content), false);
+			echo $content;
+			exit;
+		}
+
+		psst_render_markdown_share($share);
+	}
+
 	if (psst_method() === 'POST') {
 		psst_render_revealed_text($share);
 	}
@@ -579,41 +590,6 @@ function psst_views_phrase(int $views): string
 	return $views === 1 ? 'one more time' : $views . ' more times';
 }
 
-function psst_page_start(string $title, string $bodyClass = 'bg-light min-vh-100 d-flex align-items-center'): void
-{
-	header('Content-Type: text/html; charset=utf-8');
-	?>
-<!doctype html>
-<html lang="en">
-<head>
-	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<meta name="robots" content="noindex, nofollow">
-	<title><?= psst_html($title) ?></title>
-	<link rel="stylesheet" href="css/bootstrap.min.css">
-	<link rel="stylesheet" href="<?= psst_html(psst_asset('css/psst.css')) ?>">
-</head>
-<body class="<?= psst_html($bodyClass) ?>">
-	<?php
-}
-
-/**
- * @param string[] $scripts asset paths below app/
- */
-function psst_page_end(array $scripts = []): void
-{
-	foreach ($scripts as $script) {
-		?>
-	<script src="<?= psst_html(psst_asset($script)) ?>"></script>
-		<?php
-	}
-	?>
-</body>
-</html>
-	<?php
-	exit;
-}
-
 function psst_render_upload_page(array $share): void
 {
 	$title = $share['title'] !== '' ? $share['title'] : 'Upload';
@@ -722,8 +698,8 @@ function psst_render_secret_prompt(array $share)
  */
 function psst_render_reveal_page(array $share)
 {
-	$labels = ['text' => 'Show text', 'link' => 'Open link', 'file' => 'Download file'];
-	$title = $share['title'] !== '' ? $share['title'] : 'Shared ' . $share['type'];
+	$labels = ['text' => 'Show text', 'markdown' => 'Show document', 'link' => 'Open link', 'file' => 'Download file'];
+	$title = $share['title'] !== '' ? $share['title'] : ($share['type'] === 'markdown' ? 'Shared document' : 'Shared ' . $share['type']);
 	$remaining = (int) psst_share_views_remaining($share);
 
 	psst_page_start($title);
@@ -768,6 +744,40 @@ function psst_render_revealed_text(array $share)
 			<pre id="shared-text" class="decrypted-text border rounded p-3 bg-light mb-0"><?= psst_html((string) $share['content']) ?></pre>
 			<?php if ($remainingAfter === 0): ?>
 				<div class="alert alert-warning mt-3 mb-0">This was the last view. The text has been deleted from the server, so copy it now if you need it.</div>
+			<?php elseif ($remainingAfter !== null): ?>
+				<p class="small text-muted mt-3 mb-0">This share can be opened <?= psst_html(psst_views_phrase($remainingAfter)) ?>.</p>
+			<?php endif; ?>
+		</section>
+
+		<?php psst_render_footer('mt-3'); ?>
+	</main>
+	<?php
+	psst_page_end(['js/share-view.js']);
+}
+
+function psst_render_markdown_share(array $share)
+{
+	$title = $share['title'] !== '' ? $share['title'] : 'Shared document';
+	$remaining = psst_share_views_remaining($share);
+	$remainingAfter = $remaining === null ? null : max(0, $remaining - 1);
+
+	psst_send_markdown_page_headers();
+	psst_page_start($title, 'bg-light min-vh-100 py-4');
+	?>
+	<main class="container psst-page-wide">
+		<?php /* The source comes first, so a heading id in the document can never shadow it. */ ?>
+		<textarea id="psst-markdown-source" class="d-none" readonly aria-hidden="true"><?= psst_html((string) $share['content']) ?></textarea>
+		<section class="bg-white border rounded p-3 p-sm-4">
+			<div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3 pb-2 border-bottom">
+				<h1 class="h5 mb-0 text-break"><?= psst_html($title) ?></h1>
+				<div class="d-flex gap-2 flex-shrink-0">
+					<button class="btn btn-sm btn-outline-secondary" type="button" data-copy-target="psst-markdown-source">Copy Markdown</button>
+					<button class="btn btn-sm btn-outline-secondary" type="button" data-download-source="psst-markdown-source" data-filename="<?= psst_html(psst_markdown_filename($share)) ?>">Download .md</button>
+				</div>
+			</div>
+			<article class="psst-markdown"><?= psst_markdown((string) $share['content']) ?></article>
+			<?php if ($remainingAfter === 0): ?>
+				<div class="alert alert-warning mt-3 mb-0">This was the last view. The document has been deleted from the server, so download it now if you need it.</div>
 			<?php elseif ($remainingAfter !== null): ?>
 				<p class="small text-muted mt-3 mb-0">This share can be opened <?= psst_html(psst_views_phrase($remainingAfter)) ?>.</p>
 			<?php endif; ?>

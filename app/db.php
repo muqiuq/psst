@@ -33,6 +33,7 @@ function psst_default_config(): array
         'rate_limit_window_seconds' => 3600,
         'max_requests_per_window' => 50,
         'max_failed_secret_attempts_per_window' => 10,
+        'max_failed_api_auth_per_window' => 10,
         'login_delay_seconds' => 3,
         'max_failed_login_attempts' => 10,
         'login_block_seconds' => 86400,
@@ -233,6 +234,23 @@ function psst_run_migrations(PDO $pdo): void
             // Existing drop boxes were unlimited; give them the default quota.
             $statement = $pdo->prepare('UPDATE shares SET upload_quota_bytes = :quota WHERE type = \'upload\'');
             $statement->execute(['quota' => (int) psst_config()['default_upload_quota_bytes'] ?: null]);
+        },
+        10 => static function (PDO $pdo): void {
+            // Keys for api.php. Only a SHA-256 hash of each key is stored; revoked keys
+            // stay so shares can still show which application created them.
+            $pdo->exec(
+                'CREATE TABLE api_keys (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    token_prefix TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_used_at INTEGER,
+                    revoked_at INTEGER
+                )'
+            );
+            $pdo->exec('ALTER TABLE shares ADD COLUMN api_key_id INTEGER');
+            $pdo->exec('CREATE INDEX idx_shares_api_key ON shares (api_key_id)');
         },
     ];
 

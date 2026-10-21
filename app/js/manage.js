@@ -34,6 +34,8 @@
         type: document.getElementById('share-type'),
         title: document.getElementById('share-title'),
         text: document.getElementById('share-text'),
+        textLabel: document.getElementById('share-text-label'),
+        markdownHint: document.getElementById('markdown-hint'),
         link: document.getElementById('share-link'),
         file: document.getElementById('share-file'),
         fileHint: document.getElementById('share-file-hint'),
@@ -74,6 +76,16 @@
         saveButton: document.getElementById('save-button'),
         filter: document.getElementById('share-filter'),
         table: document.getElementById('shares-table'),
+        apiButton: document.getElementById('api-button'),
+        apiModal: document.getElementById('api-modal'),
+        apiKeyForm: document.getElementById('api-key-form'),
+        apiKeyName: document.getElementById('api-key-name'),
+        apiKeysTable: document.getElementById('api-keys-table'),
+        apiNewKey: document.getElementById('api-new-key'),
+        apiError: document.getElementById('api-error'),
+        apiNewKeyName: document.getElementById('api-new-key-name'),
+        apiNewKeyToken: document.getElementById('api-new-key-token'),
+        apiNewKeyCopy: document.getElementById('api-new-key-copy'),
         qrModal: document.getElementById('qr-modal'),
         qrTarget: document.getElementById('qr-target'),
         qrUrl: document.getElementById('qr-url'),
@@ -84,6 +96,7 @@
     };
 
     const qrModal = new bootstrap.Modal(elements.qrModal);
+    const apiModal = new bootstrap.Modal(elements.apiModal);
     const MEGABYTE = 1024 * 1024;
 
     function httpErrorMessage(status, data, rawBody) {
@@ -260,16 +273,21 @@
     function updateFieldVisibility() {
         const type = elements.type.value;
         const isUpload = type === 'upload';
+        const isMarkdown = type === 'markdown';
+        // Drop boxes hold no content, and Markdown is rendered on the server.
+        const canEncrypt = !isUpload && !isMarkdown;
         const editing = state.editing;
-        elements.textFields.classList.toggle('d-none', type !== 'text');
+        elements.textFields.classList.toggle('d-none', type !== 'text' && !isMarkdown);
+        elements.textLabel.textContent = isMarkdown ? 'Markdown' : 'Text';
+        elements.markdownHint.classList.toggle('d-none', !isMarkdown);
         elements.linkFields.classList.toggle('d-none', type !== 'link');
         elements.fileFields.classList.toggle('d-none', type !== 'file');
         elements.uploadFields.classList.toggle('d-none', !isUpload);
-        elements.encryptSwitchRow.classList.toggle('d-none', isUpload);
-        if (isUpload) {
+        elements.encryptSwitchRow.classList.toggle('d-none', !canEncrypt);
+        if (!canEncrypt) {
             elements.encrypted.checked = false;
         }
-        elements.passwordFields.classList.toggle('d-none', isUpload || !elements.encrypted.checked);
+        elements.passwordFields.classList.toggle('d-none', !canEncrypt || !elements.encrypted.checked);
         elements.maxViewsField.classList.toggle('d-none', isUpload);
         elements.expiryLabel.textContent = isUpload ? 'Accept files until' : 'Expires';
 
@@ -490,6 +508,9 @@
         if (share.is_encrypted) {
             badges.push(['Encrypted', 'text-bg-primary']);
         }
+        if (share.api_key_name) {
+            badges.push([`API: ${share.api_key_name}`, 'text-bg-dark']);
+        }
         if (share.has_secret_code) {
             badges.push(['Secret code', 'text-bg-info']);
         } else if (share.requires_secret_code && !isUpload) {
@@ -606,7 +627,7 @@
         elements.type.value = share.type;
         elements.title.value = share.title || '';
         elements.encrypted.checked = share.is_encrypted;
-        elements.text.value = share.type === 'text' && !share.is_encrypted ? (share.content || '') : '';
+        elements.text.value = (share.type === 'text' || share.type === 'markdown') && !share.is_encrypted ? (share.content || '') : '';
         elements.link.value = share.type === 'link' && !share.is_encrypted ? (share.content || '') : '';
         elements.text.placeholder = share.type === 'text' && share.is_encrypted ? 'Leave empty to keep the current encrypted text' : '';
         elements.link.placeholder = share.type === 'link' && share.is_encrypted ? 'Leave empty to keep the current encrypted link' : 'https://example.com';
@@ -685,6 +706,99 @@
         state.resultShare = null;
     }
 
+    // Like guarded(), but shows the error inside the API dialog, above its backdrop.
+    function guardedInDialog(handler) {
+        return (...args) => {
+            elements.apiError.classList.add('d-none');
+            return Promise.resolve()
+                .then(() => handler(...args))
+                .catch((error) => {
+                    elements.apiError.textContent = error.message || 'Something went wrong.';
+                    elements.apiError.classList.remove('d-none');
+                });
+        };
+    }
+
+    function renderApiKeys(keys) {
+        elements.apiKeysTable.innerHTML = '';
+        if (!keys.length) {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = 5;
+            cell.className = 'text-muted text-center py-3';
+            cell.textContent = 'No API keys yet.';
+            row.appendChild(cell);
+            elements.apiKeysTable.appendChild(row);
+            return;
+        }
+
+        keys.forEach((key) => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><span class="fw-semibold key-name"></span></td>
+                <td><code class="key-prefix"></code></td>
+                <td class="key-shares"></td>
+                <td class="small text-muted key-used"></td>
+                <td class="text-end key-actions"></td>
+            `;
+            row.querySelector('.key-name').textContent = key.name;
+            row.querySelector('.key-prefix').textContent = `${key.prefix}…`;
+            row.querySelector('.key-shares').textContent = String(key.share_count);
+            row.querySelector('.key-used').textContent = key.last_used_at ? formatDate(key.last_used_at) : 'Never';
+
+            const actions = row.querySelector('.key-actions');
+            if (key.revoked_at) {
+                row.classList.add('text-muted');
+                const badge = document.createElement('span');
+                badge.className = 'badge text-bg-secondary';
+                badge.textContent = `Revoked ${formatDate(key.revoked_at)}`;
+                actions.appendChild(badge);
+            } else {
+                actions.appendChild(actionButton('Revoke', guardedInDialog(() => revokeApiKey(key)), 'outline-danger'));
+            }
+            elements.apiKeysTable.appendChild(row);
+        });
+    }
+
+    async function loadApiKeys() {
+        const data = await api('api_keys');
+        renderApiKeys(data.keys || []);
+    }
+
+    async function openApiKeys() {
+        elements.apiNewKey.classList.add('d-none');
+        elements.apiNewKeyToken.value = '';
+        apiModal.show();
+        await loadApiKeys();
+    }
+
+    async function createApiKey() {
+        const name = elements.apiKeyName.value.trim();
+        if (name === '') {
+            throw new Error('Give the key a name, for example "PLM".');
+        }
+
+        const data = await api('api_key_create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
+        });
+        elements.apiKeyName.value = '';
+        elements.apiNewKeyName.textContent = data.key.name;
+        elements.apiNewKeyToken.value = data.token;
+        elements.apiNewKey.classList.remove('d-none');
+        elements.apiNewKeyToken.select();
+        await loadApiKeys();
+    }
+
+    async function revokeApiKey(key) {
+        if (!window.confirm(`Revoke the key "${key.name}"? Applications using it lose access right away. Shares it created stay online.`)) {
+            return;
+        }
+        await api('api_key_revoke', { method: 'POST', query: `&id=${encodeURIComponent(key.id)}` });
+        await loadApiKeys();
+    }
+
     // Encrypting in the browser needs several copies of the file in memory; keep well
     // below what a mid-range Android device can hold.
     const MAX_ENCRYPT_BYTES = 32 * 1024 * 1024;
@@ -760,7 +874,7 @@
         }
 
         if (!encrypted) {
-            if (type === 'text') {
+            if (type === 'text' || type === 'markdown') {
                 formData.set('content', elements.text.value);
             } else if (type === 'link') {
                 formData.set('content', elements.link.value);
@@ -1063,6 +1177,25 @@
             elements.secretCode.disabled = elements.removeSecret.checked;
         });
         elements.shareResultClose.addEventListener('click', hideShareResult);
+        elements.apiButton.addEventListener('click', guardedInDialog(openApiKeys));
+        const submitApiKey = guardedInDialog(createApiKey);
+        elements.apiKeyForm.addEventListener('submit', (event) => {
+            // Synchronously: the guarded handler runs later, too late to stop the submit.
+            event.preventDefault();
+            submitApiKey();
+        });
+        elements.apiNewKeyCopy.addEventListener('click', guardedInDialog(async () => {
+            await copyText(elements.apiNewKeyToken.value);
+            elements.apiNewKeyCopy.textContent = 'Copied';
+            window.setTimeout(() => {
+                elements.apiNewKeyCopy.textContent = 'Copy';
+            }, 1500);
+        }));
+        // A key is shown only once; do not leave it in the page after the dialog closes.
+        elements.apiModal.addEventListener('hidden.bs.modal', () => {
+            elements.apiNewKeyToken.value = '';
+            elements.apiNewKey.classList.add('d-none');
+        });
         elements.shareResultCopy.addEventListener('click', guarded(() => copyText(elements.shareResultUrl.value)));
         elements.shareResultQr.addEventListener('click', () => {
             if (state.resultShare) {

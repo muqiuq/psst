@@ -51,6 +51,25 @@
         });
     });
 
+    // Saves the page's own copy of the source, so downloading does not use up another view.
+    document.querySelectorAll('[data-download-source]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const source = document.getElementById(button.dataset.downloadSource);
+            if (!source) {
+                return;
+            }
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(new Blob([source.value], { type: 'text/markdown;charset=utf-8' }));
+            link.download = button.dataset.filename || 'document.md';
+            document.body.appendChild(link);
+            link.click();
+            window.setTimeout(() => {
+                URL.revokeObjectURL(link.href);
+                link.remove();
+            }, 1000);
+        });
+    });
+
     const form = document.getElementById('encrypted-share');
     if (!form) {
         return;

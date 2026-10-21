@@ -39,6 +39,7 @@ header('Cache-Control: no-store');
                     <div class="text-muted small" id="share-count">0 shares</div>
                 </div>
                 <div class="d-flex gap-2">
+                    <button class="btn btn-outline-secondary" id="api-button" type="button">API</button>
                     <button class="btn btn-outline-secondary" id="refresh-button" type="button">Refresh</button>
                     <button class="btn btn-outline-danger" id="logout-button" type="button">Sign out</button>
                 </div>
@@ -71,6 +72,7 @@ header('Cache-Control: no-store');
                         <label class="form-label" for="share-type">Type</label>
                         <select class="form-select mb-3" id="share-type" name="type">
                             <option value="text">Text</option>
+                            <option value="markdown">Markdown</option>
                             <option value="link">Link</option>
                             <option value="file">File</option>
                             <option value="upload">Upload (drop box)</option>
@@ -79,9 +81,10 @@ header('Cache-Control: no-store');
                         <label class="form-label" for="share-title">Title</label>
                         <input class="form-control mb-3" id="share-title" name="title" maxlength="160" placeholder="Optional">
 
-                        <div id="text-fields">
-                            <label class="form-label" for="share-text">Text</label>
-                            <textarea class="form-control mb-3" id="share-text" rows="7"></textarea>
+                        <div id="text-fields" class="mb-3">
+                            <label class="form-label" for="share-text" id="share-text-label">Text</label>
+                            <textarea class="form-control" id="share-text" rows="7"></textarea>
+                            <div class="form-text d-none" id="markdown-hint">Shown as a formatted document. Raw HTML is displayed as text; Markdown shares cannot be encrypted.</div>
                         </div>
 
                         <div id="link-fields" class="d-none">
@@ -240,6 +243,50 @@ header('Cache-Control: no-store');
                             <button class="btn btn-outline-secondary" id="copy-qr-url-button" type="button">Copy URL</button>
                             <button class="btn btn-outline-secondary" id="download-qr-pdf-button" type="button">Download PDF</button>
                             <button class="btn btn-primary" id="download-qr-button" type="button">Download SVG</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal fade" id="api-modal" tabindex="-1" aria-hidden="true" aria-labelledby="api-modal-title">
+                <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h2 class="modal-title h5" id="api-modal-title">API access</h2>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <p class="small text-muted">
+                                Other applications, for example PLM, create shares through <code>api.php</code> with an API key.
+                                Each key only sees the shares it created.
+                                <a href="api-docs.php" target="_blank" rel="noopener">Open the API documentation</a>
+                            </p>
+                            <div id="api-error" class="alert alert-danger d-none" role="alert"></div>
+                            <div id="api-new-key" class="alert alert-warning d-none" role="status">
+                                <div class="fw-semibold">Key for <span id="api-new-key-name"></span> created</div>
+                                <div class="small mb-2">Copy it now. It is shown only this once.</div>
+                                <div class="input-group">
+                                    <input class="form-control font-monospace" id="api-new-key-token" readonly aria-label="New API key">
+                                    <button class="btn btn-outline-secondary" id="api-new-key-copy" type="button">Copy</button>
+                                </div>
+                            </div>
+                            <form id="api-key-form" class="input-group mb-3">
+                                <input class="form-control" id="api-key-name" maxlength="80" placeholder="Name, e.g. PLM" aria-label="Key name" required>
+                                <button class="btn btn-primary" type="submit">Create key</button>
+                            </form>
+                            <div class="table-responsive">
+                                <table class="table table-sm align-middle mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>Key</th>
+                                            <th>Shares</th>
+                                            <th>Last used</th>
+                                            <th class="text-end"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="api-keys-table"></tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>

@@ -52,6 +52,15 @@ try {
         case 'upload_delete':
             psst_api_upload_delete();
             break;
+        case 'api_keys':
+            psst_api_api_keys();
+            break;
+        case 'api_key_create':
+            psst_api_api_key_create();
+            break;
+        case 'api_key_revoke':
+            psst_api_api_key_revoke();
+            break;
         default:
             psst_json(['error' => 'Unknown action.'], 404);
     }
@@ -241,6 +250,46 @@ function psst_api_upload_delete()
     psst_json(['deleted' => true]);
 }
 
+function psst_api_api_keys()
+{
+    psst_require_login();
+
+    psst_json(['keys' => array_map('psst_manager_api_key', psst_api_key_list())]);
+}
+
+function psst_api_api_key_create()
+{
+    psst_require_login();
+
+    if (psst_method() !== 'POST') {
+        psst_json(['error' => 'Method not allowed.'], 405);
+    }
+
+    $name = trim((string) (psst_request_data()['name'] ?? ''));
+    if ($name === '' || psst_limit_chars($name, 80) !== $name) {
+        psst_json(['error' => 'Give the key a name of up to 80 characters, for example "PLM".'], 400);
+    }
+
+    $created = psst_api_key_create($name);
+
+    psst_json(['key' => psst_manager_api_key($created['key']), 'token' => $created['token']], 201);
+}
+
+function psst_api_api_key_revoke()
+{
+    psst_require_login();
+
+    if (psst_method() !== 'POST') {
+        psst_json(['error' => 'Method not allowed.'], 405);
+    }
+
+    if (!psst_api_key_revoke((int) ($_GET['id'] ?? 0))) {
+        psst_json(['error' => 'API key not found or already revoked.'], 404);
+    }
+
+    psst_json(['revoked' => true]);
+}
+
 function psst_api_uuid(): string
 {
     $uuid = (string) ($_GET['uuid'] ?? '');
@@ -249,192 +298,4 @@ function psst_api_uuid(): string
     }
 
     return $uuid;
-}
-
-function psst_build_share_payload(?array $existing): array
-{
-    $data = psst_request_data();
-    $uuid = $existing['uuid'] ?? psst_uuid();
-    $type = trim((string) ($data['type'] ?? $existing['type'] ?? ''));
-
-    if (!in_array($type, ['text', 'link', 'file', 'upload'], true)) {
-        psst_json(['error' => 'Share type must be text, link, file, or upload.'], 400);
-    }
-
-    $isEncrypted = psst_bool($data['is_encrypted'] ?? $existing['is_encrypted'] ?? false);
-    $content = array_key_exists('content', $data) ? (string) $data['content'] : ($existing['content'] ?? null);
-    $originalFilename = $existing['original_filename'] ?? null;
-    $storedFilename = $existing['stored_filename'] ?? null;
-    $mimeType = $existing['mime_type'] ?? null;
-    $fileSize = $existing['file_size'] ?? null;
-    $uploadToken = $existing['upload_token'] ?? null;
-
-    if ($type === 'text') {
-        if (!$isEncrypted && trim((string) $content) === '') {
-            psst_json(['error' => 'Text shares require content.'], 400);
-        }
-        $originalFilename = null;
-        $storedFilename = null;
-        $mimeType = 'text/plain; charset=utf-8';
-        $fileSize = $content !== null ? strlen($content) : null;
-    }
-
-    if ($type === 'link') {
-        if (!$isEncrypted && !filter_var($content, FILTER_VALIDATE_URL)) {
-            psst_json(['error' => 'Link shares require a valid URL.'], 400);
-        }
-        $originalFilename = null;
-        $storedFilename = null;
-        $mimeType = 'text/uri-list';
-        $fileSize = $content !== null ? strlen($content) : null;
-    }
-
-    if ($type === 'file') {
-        $file = $_FILES['file'] ?? null;
-        $errorCode = is_array($file) ? (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
-
-        if ($errorCode === UPLOAD_ERR_OK) {
-            $maxBytes = psst_max_upload_bytes();
-            if ($maxBytes > 0 && (int) $file['size'] > $maxBytes) {
-                psst_json(['error' => psst_upload_limit_message(), 'max_upload_bytes' => $maxBytes], 413);
-            }
-
-            $originalFilename = psst_sanitize_filename((string) $file['name']);
-            $storedFilename = $uuid . '-' . bin2hex(random_bytes(8)) . '-' . $originalFilename;
-            $mimeType = psst_safe_mime((string) $file['type']);
-            $fileSize = (int) $file['size'];
-            $target = psst_stored_file_path($storedFilename);
-
-            if (!move_uploaded_file((string) $file['tmp_name'], $target)) {
-                psst_json(['error' => 'Unable to store uploaded file.'], 500);
-            }
-        } elseif ($errorCode !== UPLOAD_ERR_NO_FILE) {
-            $status = in_array($errorCode, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true) ? 413 : 400;
-            psst_json(['error' => psst_upload_error_message($errorCode)], $status);
-        } elseif (!$existing) {
-            psst_json(['error' => 'File shares require an uploaded file.'], 400);
-        }
-
-        $content = null;
-    }
-
-    if ($type === 'upload') {
-        // Upload shares act as a write inbox: no inline content or owner-uploaded file.
-        $content = null;
-        $originalFilename = null;
-        $storedFilename = null;
-        $mimeType = null;
-        $fileSize = null;
-        $isEncrypted = false;
-
-        $requireToken = psst_bool($data['require_token'] ?? ($uploadToken !== null && $uploadToken !== ''));
-        if ($requireToken) {
-            // Keep an existing token when editing; otherwise mint a fresh one.
-            if ($uploadToken === null || $uploadToken === '') {
-                $uploadToken = psst_random_token();
-            }
-        } else {
-            $uploadToken = null;
-        }
-    } else {
-        $uploadToken = null;
-    }
-
-    $secretCodeHash = $existing['secret_code_hash'] ?? null;
-    if (array_key_exists('secret_code', $data)) {
-        $secretCode = trim((string) $data['secret_code']);
-        $secretCodeHash = $secretCode !== '' ? psst_hash_secret($secretCode) : null;
-    }
-
-    return [
-        'uuid' => $uuid,
-        'type' => $type,
-        'title' => trim((string) ($data['title'] ?? $existing['title'] ?? '')),
-        'content' => $content,
-        'original_filename' => $originalFilename,
-        'stored_filename' => $storedFilename,
-        'mime_type' => $mimeType,
-        'file_size' => $fileSize,
-        'is_encrypted' => $isEncrypted,
-        'encryption_meta' => psst_normalize_meta($data['encryption_meta'] ?? $existing['encryption_meta'] ?? null),
-        'secret_code_hash' => $secretCodeHash,
-        'iti_secret_code_hash' => null,
-        'iti_secret_code' => psst_normalize_iti_secret_code($existing['iti_secret_code'] ?? null),
-        'upload_token' => $uploadToken,
-        'expires_at' => psst_payload_expires_at($data, $existing),
-        // A drop box is closed by its expiry; view limits do not apply to it.
-        'max_views' => $type === 'upload' ? null : psst_payload_max_views($data, $existing),
-        'upload_quota_bytes' => $type === 'upload' ? psst_payload_upload_quota($data, $existing) : null,
-    ];
-}
-
-function psst_payload_expires_at(array $data, ?array $existing): ?int
-{
-    $current = isset($existing['expires_at']) ? (int) $existing['expires_at'] : null;
-    if (!array_key_exists('expires_at', $data)) {
-        return $current;
-    }
-
-    $value = trim((string) $data['expires_at']);
-    if ($value === '') {
-        return null;
-    }
-
-    $timestamp = ctype_digit($value) ? (int) $value : strtotime($value);
-    if ($timestamp === false) {
-        psst_json(['error' => 'The expiry date is not valid.'], 400);
-    }
-
-    if ($timestamp !== $current && $timestamp <= time()) {
-        psst_json(['error' => 'The expiry must be in the future.'], 400);
-    }
-
-    return $timestamp;
-}
-
-function psst_payload_max_views(array $data, ?array $existing): ?int
-{
-    $current = isset($existing['max_views']) ? (int) $existing['max_views'] : null;
-    if (!array_key_exists('max_views', $data)) {
-        return $current;
-    }
-
-    $value = trim((string) $data['max_views']);
-    if ($value === '') {
-        return null;
-    }
-
-    if (!ctype_digit($value) || (int) $value < 1 || (int) $value > 1000000) {
-        psst_json(['error' => 'The view limit must be a whole number of at least 1.'], 400);
-    }
-
-    $maxViews = (int) $value;
-    $viewCount = (int) ($existing['view_count'] ?? 0);
-    if ($maxViews !== $current && $maxViews <= $viewCount) {
-        psst_json(['error' => sprintf('This share was already viewed %d times. Choose a higher view limit.', $viewCount)], 400);
-    }
-
-    return $maxViews;
-}
-
-function psst_payload_upload_quota(array $data, ?array $existing): ?int
-{
-    if (!array_key_exists('upload_quota_bytes', $data)) {
-        if ($existing && $existing['type'] === 'upload') {
-            return $existing['upload_quota_bytes'] !== null ? (int) $existing['upload_quota_bytes'] : null;
-        }
-
-        return (int) psst_config()['default_upload_quota_bytes'] ?: null;
-    }
-
-    $value = trim((string) $data['upload_quota_bytes']);
-    if ($value === '') {
-        return null;
-    }
-
-    if (!ctype_digit($value) || (int) $value < 1) {
-        psst_json(['error' => 'The storage limit must be a positive number.'], 400);
-    }
-
-    return (int) $value;
 }

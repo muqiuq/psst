@@ -82,3 +82,97 @@ body {
 details > summary {
     cursor: pointer;
 }
+
+.psst-page-wide {
+    max-width: 860px;
+}
+
+.psst-markdown {
+    overflow-wrap: anywhere;
+    line-height: 1.6;
+}
+
+.psst-markdown > :first-child {
+    margin-top: 0;
+}
+
+.psst-markdown h1,
+.psst-markdown h2,
+.psst-markdown h3,
+.psst-markdown h4,
+.psst-markdown h5,
+.psst-markdown h6 {
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+    font-weight: 600;
+}
+
+.psst-markdown h1,
+.psst-markdown h2 {
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.psst-markdown h1 { font-size: 1.75rem; }
+.psst-markdown h2 { font-size: 1.4rem; }
+.psst-markdown h3 { font-size: 1.2rem; }
+.psst-markdown h4,
+.psst-markdown h5,
+.psst-markdown h6 { font-size: 1rem; }
+
+.psst-markdown code {
+    padding: 0.1rem 0.3rem;
+    border-radius: 0.25rem;
+    background: #f1f3f5;
+    color: #ad1457;
+}
+
+.psst-markdown pre {
+    padding: 0.75rem 1rem;
+    border-radius: 0.375rem;
+    background: #f6f8fa;
+    border: 1px solid #e5e7eb;
+    overflow-x: auto;
+}
+
+.psst-markdown pre code {
+    padding: 0;
+    background: none;
+    color: inherit;
+    overflow-wrap: normal;
+}
+
+.psst-markdown blockquote {
+    margin: 0 0 1rem;
+    padding: 0.25rem 1rem;
+    border-left: 0.25rem solid #ced4da;
+    color: #495057;
+}
+
+.psst-markdown blockquote > :last-child {
+    margin-bottom: 0;
+}
+
+.psst-markdown img {
+    max-width: 100%;
+    height: auto;
+}
+
+.psst-markdown table {
+    width: auto;
+    min-width: 50%;
+}
+
+.psst-markdown .table-responsive {
+    margin-bottom: 1rem;
+}
+
+.psst-markdown .task-list-item {
+    list-style: none;
+    margin-left: -1.25rem;
+}
+
+.psst-markdown .task-list-item input {
+    margin-right: 0.35rem;
+}
+
