@@ -3,7 +3,8 @@
 
     const textEncoder = new TextEncoder();
     const textDecoder = new TextDecoder();
-    const iterations = 250000;
+    // OWASP 2023 recommendation for PBKDF2-HMAC-SHA256. Older shares keep the count stored in their metadata.
+    const iterations = 600000;
 
     function bytesToBase64(bytes) {
         let binary = '';

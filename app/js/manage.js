@@ -6,6 +6,9 @@
         editing: null,
         qrShare: null,
         maxUploadBytes: 0,
+        defaultUploadQuotaBytes: 0,
+        filter: '',
+        resultShare: null,
     };
 
     const elements = {
@@ -17,6 +20,13 @@
         refreshButton: document.getElementById('refresh-button'),
         appAlert: document.getElementById('app-alert'),
         shareCount: document.getElementById('share-count'),
+        shareResult: document.getElementById('share-result'),
+        shareResultTitle: document.getElementById('share-result-title'),
+        shareResultClose: document.getElementById('share-result-close'),
+        shareResultUrl: document.getElementById('share-result-url'),
+        shareResultCopy: document.getElementById('share-result-copy'),
+        shareResultQr: document.getElementById('share-result-qr'),
+        shareResultNote: document.getElementById('share-result-note'),
         shareForm: document.getElementById('share-form'),
         formTitle: document.getElementById('form-title'),
         cancelEditButton: document.getElementById('cancel-edit-button'),
@@ -29,13 +39,29 @@
         fileHint: document.getElementById('share-file-hint'),
         encrypted: document.getElementById('share-encrypted'),
         password: document.getElementById('share-password'),
+        togglePassword: document.getElementById('toggle-share-password'),
+        generatePassword: document.getElementById('generate-share-password'),
+        passwordHint: document.getElementById('password-hint'),
         secretCode: document.getElementById('secret-code'),
+        secretHint: document.getElementById('secret-code-hint'),
+        removeSecretRow: document.getElementById('remove-secret-row'),
+        removeSecret: document.getElementById('remove-secret-code'),
+        expiry: document.getElementById('share-expiry'),
+        expiryLabel: document.getElementById('share-expiry-label'),
+        expiryCustom: document.getElementById('share-expiry-custom'),
+        maxViewsField: document.getElementById('max-views-field'),
+        maxViews: document.getElementById('share-max-views'),
+        limitHint: document.getElementById('limit-hint'),
         textFields: document.getElementById('text-fields'),
         linkFields: document.getElementById('link-fields'),
         fileFields: document.getElementById('file-fields'),
         uploadFields: document.getElementById('upload-fields'),
         uploadToken: document.getElementById('share-upload-token'),
+        uploadQuota: document.getElementById('share-upload-quota'),
         uploadInfo: document.getElementById('upload-info'),
+        uploadUsage: document.getElementById('upload-usage'),
+        uploadUsageBar: document.getElementById('upload-usage-bar'),
+        uploadUsageText: document.getElementById('upload-usage-text'),
         uploadUrl: document.getElementById('upload-url'),
         copyUploadUrl: document.getElementById('copy-upload-url'),
         cmdCurlMultipart: document.getElementById('cmd-curl-multipart'),
@@ -46,6 +72,7 @@
         encryptSwitchRow: document.getElementById('encrypt-switch-row'),
         passwordFields: document.getElementById('password-fields'),
         saveButton: document.getElementById('save-button'),
+        filter: document.getElementById('share-filter'),
         table: document.getElementById('shares-table'),
         qrModal: document.getElementById('qr-modal'),
         qrTarget: document.getElementById('qr-target'),
@@ -57,6 +84,7 @@
     };
 
     const qrModal = new bootstrap.Modal(elements.qrModal);
+    const MEGABYTE = 1024 * 1024;
 
     function httpErrorMessage(status, data, rawBody) {
         if (data && data.error) {
@@ -118,6 +146,10 @@
         }
 
         if (!response.ok) {
+            // An expired session anywhere in the app returns to the login form.
+            if (response.status === 401 && action !== 'login') {
+                showLogin();
+            }
             throw new Error(httpErrorMessage(response.status, data, rawBody));
         }
 
@@ -142,6 +174,13 @@
         }, type === 'danger' ? 10000 : 3500);
     }
 
+    // Wraps event handlers so a failed request shows a message instead of failing silently.
+    function guarded(handler) {
+        return (...args) => Promise.resolve()
+            .then(() => handler(...args))
+            .catch((error) => setAlert(error.message || 'Something went wrong.', 'danger'));
+    }
+
     function showLogin() {
         elements.loginView.classList.remove('d-none');
         elements.manageView.classList.add('d-none');
@@ -152,9 +191,76 @@
         elements.manageView.classList.remove('d-none');
     }
 
+    function formatBytes(bytes) {
+        if (bytes === null || bytes === undefined) {
+            return 'unknown size';
+        }
+        if (bytes < 1024) {
+            return `${bytes} B`;
+        }
+        const units = ['KB', 'MB', 'GB'];
+        let value = bytes / 1024;
+        let unitIndex = 0;
+        while (value >= 1024 && unitIndex < units.length - 1) {
+            value /= 1024;
+            unitIndex += 1;
+        }
+        return `${value.toFixed(1)} ${units[unitIndex]}`;
+    }
+
+    function formatDate(iso) {
+        if (!iso) {
+            return '';
+        }
+        return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    }
+
+    function relativeTime(iso) {
+        const seconds = Math.round((new Date(iso).getTime() - Date.now()) / 1000);
+        const steps = [['day', 86400], ['hour', 3600], ['minute', 60]];
+        const format = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+        for (const [unit, size] of steps) {
+            if (Math.abs(seconds) >= size) {
+                return format.format(Math.round(seconds / size), unit);
+            }
+        }
+        return format.format(seconds, 'second');
+    }
+
+    // navigator.clipboard only exists on https and localhost; fall back to a selection copy.
+    function fallbackCopy(value) {
+        const area = document.createElement('textarea');
+        area.value = value;
+        area.setAttribute('readonly', '');
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.appendChild(area);
+        area.select();
+        const copied = document.execCommand('copy');
+        area.remove();
+        if (!copied) {
+            throw new Error('Copy failed. Select the text and copy it manually.');
+        }
+    }
+
+    async function copyText(value) {
+        if (navigator.clipboard && window.isSecureContext) {
+            try {
+                await navigator.clipboard.writeText(value);
+                setAlert('Copied.');
+                return;
+            } catch (error) {
+                // fall through to the selection copy
+            }
+        }
+        fallbackCopy(value);
+        setAlert('Copied.');
+    }
+
     function updateFieldVisibility() {
         const type = elements.type.value;
         const isUpload = type === 'upload';
+        const editing = state.editing;
         elements.textFields.classList.toggle('d-none', type !== 'text');
         elements.linkFields.classList.toggle('d-none', type !== 'link');
         elements.fileFields.classList.toggle('d-none', type !== 'file');
@@ -164,6 +270,89 @@
             elements.encrypted.checked = false;
         }
         elements.passwordFields.classList.toggle('d-none', isUpload || !elements.encrypted.checked);
+        elements.maxViewsField.classList.toggle('d-none', isUpload);
+        elements.expiryLabel.textContent = isUpload ? 'Accept files until' : 'Expires';
+
+        const keepsEncryptedContent = editing && editing.is_encrypted && editing.type === type && elements.encrypted.checked;
+        elements.passwordHint.textContent = keepsEncryptedContent
+            ? (type === 'file'
+                ? 'Choose a new file and password to replace the encrypted file, or leave both empty to keep it.'
+                : 'Enter new content and a password to replace the encrypted content, or leave both empty to keep it.')
+            : 'At least 8 characters. Send it to the recipient separately; the server never sees it.';
+
+        let hint = isUpload
+            ? 'After this time the drop box stops accepting files. Received files are kept.'
+            : 'The share is deleted when it expires or reaches its view limit. A limit of 1 means burn after reading.';
+        if (editing && !isUpload && editing.view_count) {
+            hint += ` Opened ${editing.view_count} ${editing.view_count === 1 ? 'time' : 'times'} so far.`;
+        }
+        elements.limitHint.textContent = hint;
+    }
+
+    function updateExpiryCustom() {
+        const isCustom = elements.expiry.value === 'custom';
+        elements.expiryCustom.classList.toggle('d-none', !isCustom);
+        if (isCustom) {
+            // datetime-local wants local time without a zone.
+            const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
+            elements.expiryCustom.min = now.toISOString().slice(0, 16);
+        }
+    }
+
+    function setExpiryOptions(share) {
+        const keep = elements.expiry.querySelector('option[value="keep"]');
+        if (keep) {
+            keep.remove();
+        }
+        elements.expiryCustom.value = '';
+
+        if (share && share.expires_at) {
+            const option = document.createElement('option');
+            option.value = 'keep';
+            option.textContent = `Keep: ${formatDate(share.expires_at)}`;
+            elements.expiry.prepend(option);
+            elements.expiry.value = 'keep';
+        } else {
+            elements.expiry.value = 'never';
+        }
+        updateExpiryCustom();
+    }
+
+    // Returns undefined to leave the current expiry unchanged.
+    function expiryValue() {
+        const choice = elements.expiry.value;
+        if (choice === 'keep') {
+            return undefined;
+        }
+        if (choice === 'never') {
+            return '';
+        }
+        if (choice === 'custom') {
+            if (!elements.expiryCustom.value) {
+                throw new Error('Pick an expiry date.');
+            }
+            const date = new Date(elements.expiryCustom.value);
+            if (Number.isNaN(date.getTime())) {
+                throw new Error('The expiry date is not valid.');
+            }
+            if (date.getTime() <= Date.now()) {
+                throw new Error('The expiry must be in the future.');
+            }
+            return date.toISOString();
+        }
+        return new Date(Date.now() + Number(choice) * 1000).toISOString();
+    }
+
+    function positiveIntegerValue(input, message) {
+        const value = input.value.trim();
+        if (value === '') {
+            return '';
+        }
+        const number = Number(value);
+        if (!Number.isInteger(number) || number < 1) {
+            throw new Error(message);
+        }
+        return number;
     }
 
     function buildOneLiners(uploadUrl) {
@@ -173,6 +362,13 @@
             raw: `curl --data-binary @/path/to/file "${uploadUrl}${separator}filename=file"`,
             mikrotik: `/export file=psst; :delay 2s; /tool fetch http-method=post http-header-field="Content-Type: application/octet-stream" url="${uploadUrl}${separator}filename=psst.rsc" http-data=[/file get psst.rsc contents]`,
         };
+    }
+
+    function storageText(share) {
+        const used = formatBytes(share.upload_used_bytes || 0);
+        return share.upload_quota_bytes
+            ? `${used} of ${formatBytes(share.upload_quota_bytes)}`
+            : `${used} (no limit)`;
     }
 
     function renderUploadInfo(share) {
@@ -189,6 +385,17 @@
         elements.cmdCurlRaw.value = cmds.raw;
         elements.cmdMikrotik.value = cmds.mikrotik;
         elements.uploadToken.checked = Boolean(share.upload_token);
+
+        const used = share.upload_used_bytes || 0;
+        const quota = share.upload_quota_bytes || 0;
+        const percent = quota ? Math.min(100, Math.round((used / quota) * 100)) : 0;
+        elements.uploadUsage.classList.toggle('d-none', !quota);
+        elements.uploadUsageBar.style.width = `${percent}%`;
+        elements.uploadUsageBar.className = `progress-bar ${percent >= 90 ? 'bg-danger' : percent >= 70 ? 'bg-warning' : ''}`;
+        elements.uploadUsage.setAttribute('aria-valuenow', String(percent));
+        elements.uploadUsageText.textContent = share.upload_closed
+            ? `${storageText(share)} · closed, no longer accepts files`
+            : storageText(share);
 
         const files = share.upload_files || [];
         elements.uploadFileCount.textContent = String(files.length);
@@ -211,7 +418,7 @@
             name.textContent = file.original_filename;
             const meta = document.createElement('div');
             meta.className = 'small text-muted';
-            meta.textContent = `${formatBytes(file.file_size)} · ${file.created_at}`;
+            meta.textContent = [formatBytes(file.file_size), formatDate(file.created_at), file.remote_ip].filter(Boolean).join(' · ');
             info.appendChild(name);
             info.appendChild(meta);
 
@@ -219,29 +426,12 @@
             remove.className = 'btn btn-sm btn-outline-danger flex-shrink-0';
             remove.type = 'button';
             remove.textContent = 'Delete';
-            remove.addEventListener('click', () => deleteUploadFile(share, file));
+            remove.addEventListener('click', guarded(() => deleteUploadFile(share, file)));
 
             item.appendChild(info);
             item.appendChild(remove);
             elements.uploadFileList.appendChild(item);
         });
-    }
-
-    function formatBytes(bytes) {
-        if (bytes === null || bytes === undefined) {
-            return 'unknown size';
-        }
-        if (bytes < 1024) {
-            return `${bytes} B`;
-        }
-        const units = ['KB', 'MB', 'GB'];
-        let value = bytes / 1024;
-        let unitIndex = 0;
-        while (value >= 1024 && unitIndex < units.length - 1) {
-            value /= 1024;
-            unitIndex += 1;
-        }
-        return `${value.toFixed(1)} ${units[unitIndex]}`;
     }
 
     async function deleteUploadFile(share, file) {
@@ -254,11 +444,21 @@
         });
         setAlert('File deleted.');
         await loadShares();
-        const refreshed = state.shares.find((item) => item.uuid === share.uuid);
-        if (refreshed && state.editing && state.editing.uuid === share.uuid) {
-            state.editing = refreshed;
-            renderUploadInfo(refreshed);
-        }
+    }
+
+    function setPasswordVisible(visible) {
+        elements.password.type = visible ? 'text' : 'password';
+        elements.togglePassword.textContent = visible ? 'Hide' : 'Show';
+    }
+
+    function generatePassword() {
+        const bytes = crypto.getRandomValues(new Uint8Array(15));
+        let binary = '';
+        bytes.forEach((byte) => {
+            binary += String.fromCharCode(byte);
+        });
+        // 20 URL-safe characters, 120 bits of entropy.
+        return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_');
     }
 
     function resetForm() {
@@ -266,56 +466,125 @@
         elements.shareForm.reset();
         elements.uuid.value = '';
         elements.uploadToken.checked = true;
+        elements.uploadQuota.value = state.defaultUploadQuotaBytes
+            ? String(Math.round(state.defaultUploadQuotaBytes / MEGABYTE))
+            : '';
+        elements.text.placeholder = '';
+        elements.link.placeholder = 'https://example.com';
+        elements.secretCode.placeholder = 'None';
+        elements.secretCode.disabled = false;
+        elements.removeSecretRow.classList.add('d-none');
         elements.formTitle.textContent = 'New share';
         elements.saveButton.textContent = 'Create share';
         elements.cancelEditButton.classList.add('d-none');
+        setPasswordVisible(false);
+        setExpiryOptions(null);
         renderUploadInfo(null);
         updateFieldVisibility();
     }
 
-    function securityText(share) {
-        const flags = [];
+    function shareBadges(share) {
+        const badges = [];
+        const isUpload = share.type === 'upload';
+
         if (share.is_encrypted) {
-            flags.push('Encrypted');
+            badges.push(['Encrypted', 'text-bg-primary']);
         }
-        if (share.requires_secret_code) {
-            flags.push('Secret / ITI');
+        if (share.has_secret_code) {
+            badges.push(['Secret code', 'text-bg-info']);
+        } else if (share.requires_secret_code && !isUpload) {
+            badges.push(['Server code', 'text-bg-info']);
         }
-        return flags.length ? flags.join(', ') : 'Open';
+        if (isUpload) {
+            badges.push(share.upload_token ? ['Token', 'text-bg-light border'] : ['No token', 'text-bg-warning']);
+            badges.push([storageText(share), 'text-bg-light border']);
+            if (share.upload_closed) {
+                badges.push(['Closed', 'text-bg-secondary']);
+            }
+        }
+        if (share.expires_at && !(isUpload && share.upload_closed)) {
+            badges.push([`${isUpload ? 'Closes' : 'Expires'} ${relativeTime(share.expires_at)}`, 'text-bg-light border']);
+        }
+        if (!isUpload && share.max_views) {
+            badges.push([`${share.view_count} of ${share.max_views} views`, 'text-bg-warning']);
+        } else if (!isUpload && share.view_count) {
+            badges.push([`${share.view_count} ${share.view_count === 1 ? 'view' : 'views'}`, 'text-bg-light border']);
+        }
+
+        return badges;
+    }
+
+    function shareMatchesFilter(share) {
+        if (!state.filter) {
+            return true;
+        }
+        const haystack = [share.title, share.url, share.type, share.original_filename].join(' ').toLowerCase();
+        return haystack.includes(state.filter);
+    }
+
+    function emptyRow(message) {
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.colSpan = 4;
+        cell.className = 'text-muted text-center py-4';
+        cell.textContent = message;
+        row.appendChild(cell);
+        return row;
     }
 
     function renderShares() {
         elements.shareCount.textContent = `${state.shares.length} ${state.shares.length === 1 ? 'share' : 'shares'}`;
+        elements.table.innerHTML = '';
 
         if (!state.shares.length) {
-            elements.table.innerHTML = '<tr><td colspan="4" class="text-muted text-center py-4">No shares yet.</td></tr>';
+            elements.table.appendChild(emptyRow('No shares yet. Create one with the form.'));
             return;
         }
 
-        elements.table.innerHTML = '';
-        state.shares.forEach((share) => {
+        const visible = state.shares.filter(shareMatchesFilter);
+        if (!visible.length) {
+            elements.table.appendChild(emptyRow('No shares match the filter.'));
+            return;
+        }
+
+        visible.forEach((share) => {
             const row = document.createElement('tr');
             row.innerHTML = `
                 <td>
                     <div class="fw-semibold share-title"></div>
-                    <a class="small" href="${share.url}" target="_blank" rel="noopener noreferrer"></a>
+                    <a class="small share-link" target="_blank" rel="noopener noreferrer"></a>
+                    <div class="small text-muted share-created"></div>
                 </td>
                 <td><span class="badge text-bg-secondary text-uppercase"></span></td>
-                <td class="small text-muted"></td>
+                <td><div class="badge-group"></div></td>
                 <td class="text-end"><div class="action-group"></div></td>
             `;
 
-            row.querySelector('.share-title').textContent = share.title || share.uuid;
-            const link = row.querySelector('a');
+            row.querySelector('.share-title').textContent = share.title || share.original_filename || share.uuid;
+            const link = row.querySelector('.share-link');
+            link.href = share.url;
             link.textContent = share.url;
+            row.querySelector('.share-created').textContent = `Created ${formatDate(share.created_at)}`;
             row.querySelector('.badge').textContent = share.type;
-            row.querySelector('td:nth-child(3)').textContent = securityText(share);
 
+            const badges = row.querySelector('.badge-group');
+            const list = shareBadges(share);
+            if (!list.length) {
+                list.push(['Open', 'text-bg-light border']);
+            }
+            list.forEach(([text, style]) => {
+                const badge = document.createElement('span');
+                badge.className = `badge ${style}`;
+                badge.textContent = text;
+                badges.appendChild(badge);
+            });
+
+            const shareLink = share.type === 'upload' ? (share.upload_url || share.url) : share.url;
             const actions = row.querySelector('.action-group');
-            actions.appendChild(actionButton('Copy', () => copyText(share.url)));
+            actions.appendChild(actionButton('Copy', guarded(() => copyText(shareLink))));
             actions.appendChild(actionButton('QR', () => openQr(share)));
             actions.appendChild(actionButton('Edit', () => editShare(share)));
-            actions.appendChild(actionButton('Delete', () => deleteShare(share), 'outline-danger'));
+            actions.appendChild(actionButton('Delete', guarded(() => deleteShare(share)), 'outline-danger'));
 
             elements.table.appendChild(row);
         });
@@ -330,12 +599,8 @@
         return button;
     }
 
-    async function copyText(value) {
-        await navigator.clipboard.writeText(value);
-        setAlert('Copied.');
-    }
-
     function editShare(share) {
+        resetForm();
         state.editing = share;
         elements.uuid.value = share.uuid;
         elements.type.value = share.type;
@@ -343,21 +608,35 @@
         elements.encrypted.checked = share.is_encrypted;
         elements.text.value = share.type === 'text' && !share.is_encrypted ? (share.content || '') : '';
         elements.link.value = share.type === 'link' && !share.is_encrypted ? (share.content || '') : '';
+        elements.text.placeholder = share.type === 'text' && share.is_encrypted ? 'Leave empty to keep the current encrypted text' : '';
+        elements.link.placeholder = share.type === 'link' && share.is_encrypted ? 'Leave empty to keep the current encrypted link' : 'https://example.com';
         elements.secretCode.value = '';
+        elements.secretCode.placeholder = share.has_secret_code ? 'Leave empty to keep the current code' : 'None';
+        elements.removeSecretRow.classList.toggle('d-none', !share.has_secret_code);
         elements.password.value = '';
+        elements.maxViews.value = share.max_views ? String(share.max_views) : '';
+        elements.uploadQuota.value = share.upload_quota_bytes
+            ? String(Math.round(share.upload_quota_bytes / MEGABYTE))
+            : '';
         elements.formTitle.textContent = 'Edit share';
         elements.saveButton.textContent = 'Save changes';
         elements.cancelEditButton.classList.remove('d-none');
+        setExpiryOptions(share);
         renderUploadInfo(share);
         updateFieldVisibility();
+        elements.shareForm.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
 
     async function deleteShare(share) {
-        if (!window.confirm(`Delete ${share.title || share.uuid}?`)) {
+        const what = share.type === 'upload' ? ' and all received files' : '';
+        if (!window.confirm(`Delete "${share.title || share.uuid}"${what}?`)) {
             return;
         }
         await api('delete', { method: 'POST', query: `&uuid=${encodeURIComponent(share.uuid)}` });
         setAlert('Share deleted.');
+        if (state.editing && state.editing.uuid === share.uuid) {
+            resetForm();
+        }
         await loadShares();
     }
 
@@ -365,6 +644,45 @@
         const data = await api('shares');
         state.shares = data.shares || [];
         renderShares();
+
+        // Keep an open drop box current (new files, storage) without touching the form fields.
+        if (state.editing) {
+            const refreshed = state.shares.find((item) => item.uuid === state.editing.uuid);
+            if (refreshed) {
+                state.editing = refreshed;
+                renderUploadInfo(refreshed);
+            }
+        }
+    }
+
+    function showShareResult(share) {
+        const isUpload = share.type === 'upload';
+        const notes = [];
+        if (share.is_encrypted) {
+            notes.push('Send the password separately; it is not part of the link.');
+        }
+        if (share.max_views) {
+            notes.push(`The share opens ${share.max_views === 1 ? 'once' : `${share.max_views} times`}, then it is deleted.`);
+        }
+        if (share.expires_at) {
+            notes.push(`${isUpload ? 'Accepts files until' : 'Expires'} ${formatDate(share.expires_at)}.`);
+        }
+        if (isUpload && share.upload_token) {
+            notes.push('The upload token is part of this link.');
+        }
+
+        state.resultShare = share;
+        elements.shareResultTitle.textContent = isUpload ? 'Drop box created' : 'Share created';
+        elements.shareResultUrl.value = isUpload ? (share.upload_url || share.url) : share.url;
+        elements.shareResultNote.textContent = notes.join(' ');
+        elements.shareResultNote.classList.toggle('d-none', !notes.length);
+        elements.shareResult.classList.remove('d-none');
+        elements.shareResult.scrollIntoView({ block: 'nearest' });
+    }
+
+    function hideShareResult() {
+        elements.shareResult.classList.add('d-none');
+        state.resultShare = null;
     }
 
     // Encrypting in the browser needs several copies of the file in memory; keep well
@@ -397,22 +715,47 @@
     }
 
     function appendCommonFields(formData) {
-        formData.set('type', elements.type.value);
+        const type = elements.type.value;
+        formData.set('type', type);
         formData.set('title', elements.title.value.trim());
         formData.set('is_encrypted', elements.encrypted.checked ? '1' : '0');
-        if (elements.secretCode.value.trim() !== '') {
+
+        if (elements.removeSecret.checked) {
+            formData.set('secret_code', '');
+        } else if (elements.secretCode.value.trim() !== '') {
             formData.set('secret_code', elements.secretCode.value.trim());
         }
+
+        const expiry = expiryValue();
+        if (expiry !== undefined) {
+            formData.set('expires_at', expiry);
+        }
+
+        if (type !== 'upload') {
+            formData.set('max_views', String(positiveIntegerValue(elements.maxViews, 'The view limit must be a whole number of at least 1.')));
+        }
+    }
+
+    function requirePassword() {
+        const password = elements.password.value;
+        if (password.length < 8) {
+            throw new Error('Encryption password must be at least 8 characters.');
+        }
+        return password;
     }
 
     async function buildPayload() {
         const formData = new FormData();
         const type = elements.type.value;
         const encrypted = elements.encrypted.checked;
+        const editing = state.editing;
+        const wasEncrypted = Boolean(editing && editing.is_encrypted && editing.type === type);
         appendCommonFields(formData);
 
         if (type === 'upload') {
             formData.set('require_token', elements.uploadToken.checked ? '1' : '0');
+            const quotaMb = positiveIntegerValue(elements.uploadQuota, 'The storage limit must be a whole number of megabytes.');
+            formData.set('upload_quota_bytes', quotaMb === '' ? '' : String(quotaMb * MEGABYTE));
             return formData;
         }
 
@@ -425,17 +768,19 @@
                 const chosen = elements.file.files[0];
                 assertUploadSize(chosen);
                 formData.set('file', chosen, safeFileName(chosen));
+            } else if (wasEncrypted) {
+                throw new Error('Choose the file again to store it without encryption.');
             }
             return formData;
         }
 
-        const password = elements.password.value;
-        if (password.length < 8) {
-            throw new Error('Encryption password must be at least 8 characters.');
-        }
-
         if (type === 'text' || type === 'link') {
             const plain = type === 'text' ? elements.text.value : elements.link.value;
+            // Editing only the title, limits or secret code keeps the encrypted content.
+            if (wasEncrypted && plain === '' && elements.password.value === '') {
+                return formData;
+            }
+            const password = requirePassword();
             const encryptedText = await window.PsstCrypto.encryptText(plain, password);
             formData.set('content', encryptedText.base64);
             formData.set('encryption_meta', JSON.stringify({ kind: type, crypto: encryptedText.meta }));
@@ -443,13 +788,14 @@
         }
 
         const file = elements.file.files[0];
-        if (!file && !state.editing) {
-            throw new Error('Choose a file to encrypt.');
-        }
         if (!file) {
-            return formData;
+            if (wasEncrypted) {
+                return formData;
+            }
+            throw new Error(editing ? 'Choose the file again to encrypt it.' : 'Choose a file to encrypt.');
         }
 
+        const password = requirePassword();
         assertUploadSize(file);
 
         // In-browser encryption holds the plaintext, the ciphertext and the request copy
@@ -484,20 +830,27 @@
 
     async function saveShare(event) {
         event.preventDefault();
-        const originalLabel = elements.saveButton.textContent;
+        const wasEditing = Boolean(state.editing);
         elements.saveButton.disabled = true;
         try {
+            if (elements.encrypted.checked && elements.password.value !== '') {
+                elements.saveButton.textContent = 'Encrypting…';
+            }
             const payload = await buildPayload();
-            const action = state.editing ? 'update' : 'create';
-            const query = state.editing ? `&uuid=${encodeURIComponent(state.editing.uuid)}` : '';
+            const action = wasEditing ? 'update' : 'create';
+            const query = wasEditing ? `&uuid=${encodeURIComponent(state.editing.uuid)}` : '';
             if (elements.type.value === 'file' && elements.file.files[0]) {
                 elements.saveButton.textContent = 'Uploading…';
             }
             const result = await api(action, { method: 'POST', query, body: payload });
-            setAlert(state.editing ? 'Share updated.' : 'Share created.');
             const savedShare = result && result.share ? result.share : null;
             resetForm();
             await loadShares();
+            if (wasEditing) {
+                setAlert('Share updated.');
+            } else if (savedShare) {
+                showShareResult(savedShare);
+            }
             // Keep upload shares open in edit mode so the owner sees the URL + one-liners.
             if (savedShare && savedShare.type === 'upload') {
                 const refreshed = state.shares.find((item) => item.uuid === savedShare.uuid) || savedShare;
@@ -507,7 +860,7 @@
             setAlert(error.message || 'Unable to save share.', 'danger');
         } finally {
             elements.saveButton.disabled = false;
-            elements.saveButton.textContent = originalLabel;
+            elements.saveButton.textContent = state.editing ? 'Save changes' : 'Create share';
         }
     }
 
@@ -523,7 +876,14 @@
             return '';
         }
 
-        return mode === 'iti' ? state.qrShare.iti_url : state.qrShare.url;
+        if (mode === 'iti') {
+            return state.qrShare.iti_url;
+        }
+
+        // A drop box QR code must carry the upload token, or scanning it only shows a warning.
+        return state.qrShare.type === 'upload'
+            ? (state.qrShare.upload_url || state.qrShare.url)
+            : state.qrShare.url;
     }
 
     function renderQr() {
@@ -683,20 +1043,41 @@
     async function init() {
         elements.type.addEventListener('change', updateFieldVisibility);
         elements.encrypted.addEventListener('change', updateFieldVisibility);
+        elements.expiry.addEventListener('change', updateExpiryCustom);
         elements.shareForm.addEventListener('submit', saveShare);
         elements.cancelEditButton.addEventListener('click', resetForm);
-        elements.refreshButton.addEventListener('click', loadShares);
-        elements.copyQrUrlButton.addEventListener('click', () => copyText(elements.qrUrl.value));
+        elements.refreshButton.addEventListener('click', guarded(async () => {
+            await loadShares();
+            setAlert('Shares refreshed.');
+        }));
+        elements.filter.addEventListener('input', () => {
+            state.filter = elements.filter.value.trim().toLowerCase();
+            renderShares();
+        });
+        elements.togglePassword.addEventListener('click', () => setPasswordVisible(elements.password.type === 'password'));
+        elements.generatePassword.addEventListener('click', () => {
+            elements.password.value = generatePassword();
+            setPasswordVisible(true);
+        });
+        elements.removeSecret.addEventListener('change', () => {
+            elements.secretCode.disabled = elements.removeSecret.checked;
+        });
+        elements.shareResultClose.addEventListener('click', hideShareResult);
+        elements.shareResultCopy.addEventListener('click', guarded(() => copyText(elements.shareResultUrl.value)));
+        elements.shareResultQr.addEventListener('click', () => {
+            if (state.resultShare) {
+                openQr(state.resultShare);
+            }
+        });
+        elements.copyQrUrlButton.addEventListener('click', guarded(() => copyText(elements.qrUrl.value)));
         elements.downloadQrButton.addEventListener('click', downloadQr);
         elements.downloadQrPdfButton.addEventListener('click', downloadQrPdf);
-        elements.copyUploadUrl.addEventListener('click', () => copyText(elements.uploadUrl.value));
+        elements.copyUploadUrl.addEventListener('click', guarded(() => copyText(elements.uploadUrl.value)));
         document.querySelectorAll('button[data-copy-target]').forEach((button) => {
-            button.addEventListener('click', () => {
+            button.addEventListener('click', guarded(() => {
                 const target = document.getElementById(button.dataset.copyTarget);
-                if (target) {
-                    copyText(target.value);
-                }
-            });
+                return target ? copyText(target.value) : undefined;
+            }));
         });
         document.querySelectorAll('input[name="qr-mode"]').forEach((input) => input.addEventListener('change', renderQr));
 
@@ -704,7 +1085,9 @@
             event.preventDefault();
             elements.loginError.classList.add('d-none');
             const submitButton = elements.loginForm.querySelector('button[type="submit"]');
+            const htpInput = document.getElementById('login-htp');
             submitButton.disabled = true;
+            submitButton.textContent = 'Signing in…';
             try {
                 await api('login', {
                     method: 'POST',
@@ -712,9 +1095,12 @@
                     body: JSON.stringify({
                         username: document.getElementById('login-username').value,
                         password: document.getElementById('login-password').value,
-                        htp: document.getElementById('login-htp').value,
+                        htp: htpInput.value,
                     }),
                 });
+                document.getElementById('login-password').value = '';
+                // Each HTP number works only once; the next sign-in needs a new one.
+                htpInput.value = '';
                 showManage();
                 await loadShares();
             } catch (error) {
@@ -722,18 +1108,22 @@
                 elements.loginError.classList.remove('d-none');
             } finally {
                 submitButton.disabled = false;
+                submitButton.textContent = 'Sign in';
             }
         });
 
-        elements.logoutButton.addEventListener('click', async () => {
+        elements.logoutButton.addEventListener('click', guarded(async () => {
             await api('logout', { method: 'POST' });
+            hideShareResult();
+            resetForm();
             showLogin();
-        });
+        }));
 
-        updateFieldVisibility();
         const status = await api('status');
         state.maxUploadBytes = Number(status.max_upload_bytes || 0);
+        state.defaultUploadQuotaBytes = Number(status.default_upload_quota_bytes || 0);
         renderUploadLimitHint();
+        resetForm();
         if (status.authenticated) {
             showManage();
             await loadShares();

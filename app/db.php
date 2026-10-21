@@ -7,10 +7,38 @@ function psst_config(): array
     static $config = null;
 
     if ($config === null) {
-        $config = require __DIR__ . '/config.php';
+        // Defaults keep older config.php files working when new options are added.
+        $config = array_replace(psst_default_config(), require __DIR__ . '/config.php');
+
+        if ($config['timezone'] !== '' && !@date_default_timezone_set((string) $config['timezone'])) {
+            error_log('PSST: unknown timezone in config.php: ' . $config['timezone']);
+        }
     }
 
     return $config;
+}
+
+function psst_default_config(): array
+{
+    return [
+        'app_name' => 'PSST',
+        'timezone' => '',
+        'data_dir' => __DIR__ . '/data',
+        'files_dir' => __DIR__ . '/data/files',
+        'database_path' => __DIR__ . '/data/psst.sqlite',
+        'server_secret_code' => '',
+        'max_upload_bytes' => 104857600,
+        'default_upload_quota_bytes' => 1073741824,
+        'trusted_proxies' => [],
+        'rate_limit_window_seconds' => 3600,
+        'max_requests_per_window' => 50,
+        'max_failed_secret_attempts_per_window' => 10,
+        'login_delay_seconds' => 3,
+        'max_failed_login_attempts' => 10,
+        'login_block_seconds' => 86400,
+        'session_lifetime_seconds' => 7776000,
+        'session_name' => 'psst_session',
+    ];
 }
 
 function psst_db(): PDO
@@ -182,6 +210,29 @@ function psst_run_migrations(PDO $pdo): void
             );
 
             $pdo->exec('CREATE INDEX idx_upload_files_share ON upload_files (share_id)');
+        },
+        7 => static function (PDO $pdo): void {
+            // Every HTP number may only be used once. INTEGER PRIMARY KEY is the rowid, so
+            // the lookup needs no extra index and each row stays a few bytes.
+            $pdo->exec(
+                'CREATE TABLE htp_used (
+                    value INTEGER PRIMARY KEY,
+                    used_at INTEGER NOT NULL
+                )'
+            );
+        },
+        8 => static function (PDO $pdo): void {
+            $pdo->exec('ALTER TABLE shares ADD COLUMN expires_at INTEGER');
+            $pdo->exec('ALTER TABLE shares ADD COLUMN max_views INTEGER');
+            $pdo->exec('ALTER TABLE shares ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0');
+            $pdo->exec('CREATE INDEX idx_shares_expires_at ON shares (expires_at)');
+        },
+        9 => static function (PDO $pdo): void {
+            $pdo->exec('ALTER TABLE shares ADD COLUMN upload_quota_bytes INTEGER');
+
+            // Existing drop boxes were unlimited; give them the default quota.
+            $statement = $pdo->prepare('UPDATE shares SET upload_quota_bytes = :quota WHERE type = \'upload\'');
+            $statement->execute(['quota' => (int) psst_config()['default_upload_quota_bytes'] ?: null]);
         },
     ];
 

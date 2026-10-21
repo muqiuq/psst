@@ -61,3 +61,24 @@ body {
     margin: 0 0.5rem;
     opacity: 0.5;
 }
+
+.badge-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    max-width: 18rem;
+}
+
+.badge-group .badge {
+    font-weight: 500;
+}
+
+.share-link {
+    display: inline-block;
+    max-width: 34rem;
+    overflow-wrap: anywhere;
+}
+
+details > summary {
+    cursor: pointer;
+}

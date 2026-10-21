@@ -11,7 +11,10 @@
     const status = document.getElementById('upload-status');
     const progress = document.getElementById('upload-progress');
     const progressBar = document.getElementById('upload-progress-bar');
+    const space = document.getElementById('upload-space');
     const maxBytes = Number(form.dataset.maxBytes || 0);
+    // Empty means the drop box has no storage limit.
+    let remainingBytes = form.dataset.remainingBytes === '' ? null : Number(form.dataset.remainingBytes);
 
     function formatBytes(bytes) {
         if (!bytes || bytes < 0) {
@@ -61,6 +64,39 @@
             }
         }
         return null;
+    }
+
+    function totalSize(files) {
+        let total = 0;
+        for (let index = 0; index < files.length; index += 1) {
+            total += files[index].size;
+        }
+        return total;
+    }
+
+    function selectionProblem(files) {
+        const tooBig = oversizedFile(files);
+        if (tooBig) {
+            return `"${tooBig.name}" is ${formatBytes(tooBig.size)}, which exceeds the ${formatBytes(maxBytes)} limit.`;
+        }
+        if (remainingBytes !== null && totalSize(files) > remainingBytes) {
+            return remainingBytes > 0
+                ? `Not enough space left in this drop box: ${formatBytes(remainingBytes)} remaining.`
+                : 'This drop box is full.';
+        }
+        return null;
+    }
+
+    function updateSpace(bytes) {
+        if (bytes === null || bytes === undefined || !space) {
+            return;
+        }
+        remainingBytes = Number(bytes);
+        space.textContent = `Space left: ${formatBytes(remainingBytes)}.`;
+        if (remainingBytes <= 0) {
+            input.disabled = true;
+            button.disabled = true;
+        }
     }
 
     function describeError(xhr) {
@@ -126,7 +162,13 @@
 
             xhr.addEventListener('load', () => {
                 if (xhr.status >= 200 && xhr.status < 300) {
-                    resolve();
+                    let data = null;
+                    try {
+                        data = JSON.parse(xhr.responseText || 'null');
+                    } catch (error) {
+                        data = null;
+                    }
+                    resolve(data);
                     return;
                 }
                 reject(new Error(describeError(xhr)));
@@ -142,9 +184,9 @@
     input.addEventListener('change', () => {
         clearStatus();
         hideProgress();
-        const tooBig = oversizedFile(input.files || []);
-        if (tooBig) {
-            setStatus(`"${tooBig.name}" is ${formatBytes(tooBig.size)}, which exceeds the ${formatBytes(maxBytes)} limit.`, 'danger');
+        const problem = selectionProblem(input.files || []);
+        if (problem) {
+            setStatus(problem, 'danger');
         }
     });
 
@@ -157,9 +199,9 @@
             return;
         }
 
-        const tooBig = oversizedFile(files);
-        if (tooBig) {
-            setStatus(`"${tooBig.name}" is ${formatBytes(tooBig.size)}, which exceeds the ${formatBytes(maxBytes)} limit.`, 'danger');
+        const problem = selectionProblem(files);
+        if (problem) {
+            setStatus(problem, 'danger');
             return;
         }
 
@@ -168,14 +210,15 @@
         setProgress(0);
 
         try {
-            await upload(files);
+            const result = await upload(files);
             hideProgress();
             setStatus(files.length === 1 ? 'Upload complete.' : `${files.length} files uploaded.`, 'success');
             form.reset();
+            button.disabled = false;
+            updateSpace(result ? result.remaining_bytes : null);
         } catch (error) {
             hideProgress();
             setStatus(error.message || 'Upload failed.', 'danger');
-        } finally {
             button.disabled = false;
         }
     });

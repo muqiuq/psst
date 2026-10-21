@@ -8,7 +8,7 @@ require_once __DIR__ . '/models.php';
  * Application version. Bump this on release; it is shown in the footer and is also
  * used to cache-bust the vendored CSS/JS so browsers pick up new assets after a deploy.
  */
-define('PSST_VERSION', '1.1.0');
+define('PSST_VERSION', '1.2.0');
 
 const PSST_REPO_URL = 'https://github.com/muqiuq/psst';
 const PSST_AUTHOR_NAME = 'Philipp Albrecht';
@@ -148,20 +148,23 @@ function psst_require_login(): void
     }
 }
 
-function psst_login(string $username, string $password): bool
+function psst_credentials_valid(string $username, string $password): bool
 {
     $config = psst_config();
-    $valid = hash_equals($config['admin_username'], $username)
-        && hash_equals($config['admin_password'], $password);
 
-    if ($valid) {
-        psst_start_session();
-        session_regenerate_id(true);
-        $_SESSION['psst_logged_in'] = true;
-        $_SESSION['psst_login_time'] = time();
-    }
+    // Compare both, so the response time does not reveal which one was wrong.
+    $usernameOk = hash_equals((string) $config['admin_username'], $username);
+    $passwordOk = hash_equals((string) $config['admin_password'], $password);
 
-    return $valid;
+    return $usernameOk && $passwordOk;
+}
+
+function psst_login_session_start(): void
+{
+    psst_start_session();
+    session_regenerate_id(true);
+    $_SESSION['psst_logged_in'] = true;
+    $_SESSION['psst_login_time'] = time();
 }
 
 function psst_login_is_blocked(): bool
@@ -185,24 +188,53 @@ function psst_login_delay(): void
     }
 }
 
-function psst_verify_htp(string $value): bool
+/**
+ * HTP: a 6-digit number above 100000 and below 999999 that contains the current month
+ * (MM) and the current minute (mm, +/- 1 minute) at positions that do not overlap.
+ * At 14:34 in October: 103412, 341099 and 510347 are valid.
+ * At 14:01 in October: 100155 is valid, 101555 is not ("10" and "01" share a digit).
+ * At 14:10 in October: 101055 is valid, 210155 is not ("10" occurs only once).
+ *
+ * Returns the number when it is valid and unused, null otherwise. The caller marks it
+ * used with psst_htp_mark_used() once the login succeeds.
+ */
+function psst_htp_value(string $value): ?int
 {
-    if (!preg_match('/^-?\d+$/', trim($value))) {
-        return false;
+    $value = trim($value);
+    if (preg_match('/^\d{6}$/', $value) !== 1) {
+        return null;
     }
 
-    $submitted = (int) trim($value);
-    $secret = (int) psst_config()['htp_secret_number'];
+    $number = (int) $value;
+    if ($number <= 100000 || $number >= 999999) {
+        return null;
+    }
+
     $now = time();
-
-    if($submitted  > 7000 && $submitted < 8000) return true;
-
     foreach ([-60, 0, 60] as $offset) {
         $timestamp = $now + $offset;
-        $minute = (int) date('i', $timestamp);
-        $day = (int) date('j', $timestamp);
-        if ($submitted === ($secret * $minute * 2 + $day)) {
-            return true;
+        if (psst_htp_contains_pair($value, date('m', $timestamp), date('i', $timestamp))) {
+            return psst_htp_is_used($number) ? null : $number;
+        }
+    }
+
+    return null;
+}
+
+function psst_htp_contains_pair(string $value, string $month, string $minute): bool
+{
+    $last = strlen($value) - 2;
+
+    for ($monthAt = 0; $monthAt <= $last; $monthAt += 1) {
+        if (substr($value, $monthAt, 2) !== $month) {
+            continue;
+        }
+
+        for ($minuteAt = 0; $minuteAt <= $last; $minuteAt += 1) {
+            $overlaps = abs($minuteAt - $monthAt) < 2;
+            if (!$overlaps && substr($value, $minuteAt, 2) === $minute) {
+                return true;
+            }
         }
     }
 
@@ -231,9 +263,78 @@ function psst_uuid(): string
     return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($bytes), 4));
 }
 
+/**
+ * Behind a reverse proxy every request comes from the proxy, so all visitors would share
+ * one rate-limit bucket. For proxies listed in trusted_proxies, the client is the last
+ * X-Forwarded-For entry that is not itself a trusted proxy.
+ */
 function psst_client_ip(): string
 {
-    return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+    static $clientIp = null;
+
+    if ($clientIp !== null) {
+        return $clientIp;
+    }
+
+    $remote = (string) ($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0');
+    $trusted = (array) psst_config()['trusted_proxies'];
+    $clientIp = $remote;
+
+    if ($trusted === [] || !psst_ip_in_list($remote, $trusted)) {
+        return $clientIp;
+    }
+
+    $forwarded = array_reverse(array_map('trim', explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''))));
+    foreach ($forwarded as $candidate) {
+        if (filter_var($candidate, FILTER_VALIDATE_IP) === false) {
+            break;
+        }
+
+        $clientIp = $candidate;
+        if (!psst_ip_in_list($candidate, $trusted)) {
+            break;
+        }
+    }
+
+    return $clientIp;
+}
+
+/**
+ * @param string[] $ranges IP addresses or CIDR ranges, IPv4 or IPv6
+ */
+function psst_ip_in_list(string $ip, array $ranges): bool
+{
+    $address = @inet_pton($ip);
+    if ($address === false) {
+        return false;
+    }
+
+    foreach ($ranges as $range) {
+        $parts = explode('/', trim((string) $range), 2);
+        $network = @inet_pton($parts[0]);
+        if ($network === false || strlen($network) !== strlen($address)) {
+            continue;
+        }
+
+        $bits = isset($parts[1]) ? (int) $parts[1] : strlen($address) * 8;
+        $bytes = intdiv($bits, 8);
+        $remainder = $bits % 8;
+
+        if (substr($address, 0, $bytes) !== substr($network, 0, $bytes)) {
+            continue;
+        }
+
+        if ($remainder === 0) {
+            return true;
+        }
+
+        $mask = (0xff << (8 - $remainder)) & 0xff;
+        if ((ord($address[$bytes]) & $mask) === (ord($network[$bytes]) & $mask)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function psst_base_url(): string
@@ -540,7 +641,8 @@ function psst_public_share(array $share): array
         'download_url' => psst_share_download_url($share['uuid']),
         'type' => $share['type'],
         'title' => $share['title'],
-        'content' => $share['type'] === 'file' ? null : $share['content'],
+        // Encrypted content is fetched separately (raw=1) so that only opening it counts as a view.
+        'content' => $share['type'] === 'file' || $share['is_encrypted'] ? null : $share['content'],
         'original_filename' => $share['original_filename'],
         'mime_type' => $share['mime_type'],
         'file_size' => $share['file_size'] !== null ? (int) $share['file_size'] : null,
@@ -548,8 +650,10 @@ function psst_public_share(array $share): array
         'encryption_meta' => $share['encryption_meta'] ? json_decode($share['encryption_meta'], true) : null,
         'requires_secret_code' => !empty($share['secret_code_hash']) || psst_global_secret_enabled(),
         'has_iti_secret_code' => !empty($share['iti_secret_code']),
-        'created_at' => $share['created_at'],
-        'updated_at' => $share['updated_at'],
+        'expires_at' => psst_iso_timestamp($share['expires_at'] ?? null),
+        'views_remaining' => psst_share_views_remaining($share),
+        'created_at' => psst_iso_sqlite_time($share['created_at']),
+        'updated_at' => psst_iso_sqlite_time($share['updated_at']),
     ];
 }
 
@@ -560,15 +664,21 @@ function psst_manager_share(array $share): array
     $public['iti_url'] = !empty($share['iti_secret_code'])
         ? psst_iti_qr_url($share['uuid'])
         : null;
+    $public['has_secret_code'] = !empty($share['secret_code_hash']);
+    $public['max_views'] = $share['max_views'] !== null ? (int) $share['max_views'] : null;
+    $public['view_count'] = (int) ($share['view_count'] ?? 0);
 
     if (($share['type'] ?? '') === 'upload') {
         $token = (string) ($share['upload_token'] ?? '');
+        $files = psst_upload_files_for_share((int) $share['id']);
         $public['upload_token'] = $token;
         $public['upload_url'] = psst_upload_url($share['uuid'], $token !== '' ? $token : null);
-        $public['upload_files'] = array_map(
-            'psst_manager_upload_file',
-            psst_upload_files_for_share((int) $share['id'])
-        );
+        $public['upload_quota_bytes'] = $share['upload_quota_bytes'] !== null ? (int) $share['upload_quota_bytes'] : null;
+        $public['upload_used_bytes'] = array_sum(array_map(static function (array $file): int {
+            return (int) $file['file_size'];
+        }, $files));
+        $public['upload_closed'] = psst_share_is_expired($share);
+        $public['upload_files'] = array_map('psst_manager_upload_file', $files);
     }
 
     return $public;
@@ -582,10 +692,91 @@ function psst_manager_upload_file(array $file): array
         'mime_type' => $file['mime_type'],
         'file_size' => $file['file_size'] !== null ? (int) $file['file_size'] : null,
         'remote_ip' => $file['remote_ip'],
-        'created_at' => $file['created_at'],
-        'download_url' => psst_base_url() . '/manage-api.php?action=upload_download&uuid='
+        'created_at' => psst_iso_sqlite_time($file['created_at']),
+        // Relative, so it works whichever host name the manager is opened with.
+        'download_url' => 'manage-api.php?action=upload_download&uuid='
             . rawurlencode($file['share_uuid'] ?? '') . '&file=' . rawurlencode($file['uuid']),
     ];
+}
+
+function psst_share_is_expired(array $share): bool
+{
+    return $share['expires_at'] !== null && (int) $share['expires_at'] <= time();
+}
+
+function psst_share_views_remaining(array $share): ?int
+{
+    if ($share['max_views'] === null) {
+        return null;
+    }
+
+    return max(0, (int) $share['max_views'] - (int) $share['view_count']);
+}
+
+/**
+ * Upload shares: remaining quota in bytes, or null when the drop box has no limit.
+ */
+function psst_upload_remaining_bytes(array $share): ?int
+{
+    if ($share['upload_quota_bytes'] === null) {
+        return null;
+    }
+
+    return max(0, (int) $share['upload_quota_bytes'] - psst_upload_used_bytes((int) $share['id']));
+}
+
+function psst_iso_timestamp($timestamp): ?string
+{
+    return $timestamp === null ? null : gmdate('Y-m-d\TH:i:s\Z', (int) $timestamp);
+}
+
+/**
+ * SQLite CURRENT_TIMESTAMP is UTC without a zone marker; mark it so browsers convert it.
+ */
+function psst_iso_sqlite_time(?string $value): ?string
+{
+    return $value === null || $value === '' ? null : str_replace(' ', 'T', $value) . 'Z';
+}
+
+/**
+ * Only a well-formed type/subtype is passed on; the browser-supplied MIME type of an
+ * upload must not be able to smuggle anything into the Content-Type header.
+ */
+function psst_safe_mime(?string $mime): string
+{
+    $mime = strtolower(trim(explode(';', (string) $mime)[0]));
+
+    return preg_match('#^[a-z0-9][a-z0-9!\#$&^_.+-]*/[a-z0-9][a-z0-9!\#$&^_.+-]*$#', $mime) === 1
+        ? $mime
+        : 'application/octet-stream';
+}
+
+/**
+ * Types a browser can show without running script. Everything else, notably HTML, SVG
+ * and XML, is downloaded instead: rendered on this origin it could act on the manager.
+ */
+function psst_inline_safe_mime(string $mime): bool
+{
+    $safe = ['application/pdf', 'text/plain', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp'];
+
+    return in_array($mime, $safe, true) || strpos($mime, 'video/') === 0 || strpos($mime, 'audio/') === 0;
+}
+
+function psst_send_file_headers(?string $mime, string $filename, int $length, bool $inline): void
+{
+    $mime = psst_safe_mime($mime);
+    $inline = $inline && psst_inline_safe_mime($mime);
+
+    header('Content-Type: ' . $mime);
+    header('Content-Length: ' . $length);
+    header('Content-Disposition: ' . ($inline ? 'inline' : 'attachment') . '; filename="' . addcslashes($filename, '"\\') . '"');
+    header('X-Content-Type-Options: nosniff');
+
+    // Chrome refuses to show PDFs in a sandboxed document; its viewer has no access to
+    // this origin anyway.
+    if ($mime !== 'application/pdf') {
+        header('Content-Security-Policy: sandbox');
+    }
 }
 
 function psst_global_secret_enabled(): bool
@@ -605,7 +796,7 @@ function psst_rate_limit_check(string $eventType, int $limit): bool
     $windowStart = time() - (int) $config['rate_limit_window_seconds'];
     $ipAddress = psst_client_ip();
 
-    psst_prune_old_events($windowStart - 60);
+    psst_prune_old_events($windowStart - 60, time() - (int) $config['login_block_seconds'] - 60);
 
     return psst_count_events($ipAddress, $eventType, $windowStart) < $limit;
 }

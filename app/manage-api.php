@@ -5,6 +5,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/functions.php';
 
 psst_configure_error_output();
+header('Cache-Control: no-store');
 
 try {
     psst_db();
@@ -55,7 +56,9 @@ try {
             psst_json(['error' => 'Unknown action.'], 404);
     }
 } catch (Throwable $exception) {
-    psst_json(['error' => 'Server error.', 'detail' => $exception->getMessage()], 500);
+    // Details go to the server log only; they can contain paths and SQL.
+    error_log('PSST manage-api: ' . $exception);
+    psst_json(['error' => 'Server error.'], 500);
 }
 
 function psst_api_status()
@@ -66,6 +69,7 @@ function psst_api_status()
         'app_version' => psst_version(),
         'base_url' => psst_base_url(),
         'max_upload_bytes' => psst_max_upload_bytes(),
+        'default_upload_quota_bytes' => (int) psst_config()['default_upload_quota_bytes'] ?: null,
     ]);
 }
 
@@ -84,9 +88,11 @@ function psst_api_login()
     $data = psst_request_data();
     $username = trim((string) ($data['username'] ?? ''));
     $password = (string) ($data['password'] ?? '');
-    $htp = (string) ($data['htp'] ?? '');
+    $htpNumber = psst_htp_value((string) ($data['htp'] ?? ''));
 
-    if (psst_verify_htp($htp) && psst_login($username, $password)) {
+    // The HTP number is used up only by a successful login, and marking it is atomic.
+    if ($htpNumber !== null && psst_credentials_valid($username, $password) && psst_htp_mark_used($htpNumber)) {
+        psst_login_session_start();
         psst_json(['authenticated' => true]);
     }
 
@@ -112,6 +118,7 @@ function psst_api_shares()
         psst_json(['error' => 'Method not allowed.'], 405);
     }
 
+    psst_share_cleanup_unavailable();
     psst_json(['shares' => array_map('psst_manager_share', psst_share_list())]);
 }
 
@@ -160,10 +167,7 @@ function psst_api_update_share()
     $updated = psst_share_update($uuid, $share);
 
     if ($updated && $existing['stored_filename'] && $existing['stored_filename'] !== $updated['stored_filename']) {
-        $oldPath = psst_stored_file_path($existing['stored_filename']);
-        if (is_file($oldPath)) {
-            unlink($oldPath);
-        }
+        psst_stored_file_unlink($existing['stored_filename']);
     }
 
     psst_json(['share' => psst_manager_share($updated)]);
@@ -177,17 +181,8 @@ function psst_api_delete_share()
         psst_json(['error' => 'Method not allowed.'], 405);
     }
 
-    $uuid = psst_api_uuid();
-    $share = psst_share_find_by_uuid($uuid);
-    if (!$share) {
+    if (!psst_share_delete(psst_api_uuid())) {
         psst_json(['error' => 'Share not found.'], 404);
-    }
-
-    if (psst_share_delete($uuid) && $share['stored_filename']) {
-        $path = psst_stored_file_path($share['stored_filename']);
-        if (is_file($path)) {
-            unlink($path);
-        }
     }
 
     psst_json(['deleted' => true]);
@@ -217,11 +212,7 @@ function psst_api_upload_download()
         psst_json(['error' => 'Stored file is missing.'], 404);
     }
 
-    $filename = $uploadFile['original_filename'] ?: 'upload-file';
-    header('Content-Type: ' . ($uploadFile['mime_type'] ?: 'application/octet-stream'));
-    header('Content-Length: ' . filesize($path));
-    header('Content-Disposition: attachment; filename="' . addcslashes($filename, '"\\') . '"');
-    header('X-Content-Type-Options: nosniff');
+    psst_send_file_headers($uploadFile['mime_type'], $uploadFile['original_filename'] ?: 'upload-file', (int) filesize($path), false);
     readfile($path);
     exit;
 }
@@ -310,7 +301,7 @@ function psst_build_share_payload(?array $existing): array
 
             $originalFilename = psst_sanitize_filename((string) $file['name']);
             $storedFilename = $uuid . '-' . bin2hex(random_bytes(8)) . '-' . $originalFilename;
-            $mimeType = $file['type'] ?: 'application/octet-stream';
+            $mimeType = psst_safe_mime((string) $file['type']);
             $fileSize = (int) $file['size'];
             $target = psst_stored_file_path($storedFilename);
 
@@ -370,5 +361,80 @@ function psst_build_share_payload(?array $existing): array
         'iti_secret_code_hash' => null,
         'iti_secret_code' => psst_normalize_iti_secret_code($existing['iti_secret_code'] ?? null),
         'upload_token' => $uploadToken,
+        'expires_at' => psst_payload_expires_at($data, $existing),
+        // A drop box is closed by its expiry; view limits do not apply to it.
+        'max_views' => $type === 'upload' ? null : psst_payload_max_views($data, $existing),
+        'upload_quota_bytes' => $type === 'upload' ? psst_payload_upload_quota($data, $existing) : null,
     ];
+}
+
+function psst_payload_expires_at(array $data, ?array $existing): ?int
+{
+    $current = isset($existing['expires_at']) ? (int) $existing['expires_at'] : null;
+    if (!array_key_exists('expires_at', $data)) {
+        return $current;
+    }
+
+    $value = trim((string) $data['expires_at']);
+    if ($value === '') {
+        return null;
+    }
+
+    $timestamp = ctype_digit($value) ? (int) $value : strtotime($value);
+    if ($timestamp === false) {
+        psst_json(['error' => 'The expiry date is not valid.'], 400);
+    }
+
+    if ($timestamp !== $current && $timestamp <= time()) {
+        psst_json(['error' => 'The expiry must be in the future.'], 400);
+    }
+
+    return $timestamp;
+}
+
+function psst_payload_max_views(array $data, ?array $existing): ?int
+{
+    $current = isset($existing['max_views']) ? (int) $existing['max_views'] : null;
+    if (!array_key_exists('max_views', $data)) {
+        return $current;
+    }
+
+    $value = trim((string) $data['max_views']);
+    if ($value === '') {
+        return null;
+    }
+
+    if (!ctype_digit($value) || (int) $value < 1 || (int) $value > 1000000) {
+        psst_json(['error' => 'The view limit must be a whole number of at least 1.'], 400);
+    }
+
+    $maxViews = (int) $value;
+    $viewCount = (int) ($existing['view_count'] ?? 0);
+    if ($maxViews !== $current && $maxViews <= $viewCount) {
+        psst_json(['error' => sprintf('This share was already viewed %d times. Choose a higher view limit.', $viewCount)], 400);
+    }
+
+    return $maxViews;
+}
+
+function psst_payload_upload_quota(array $data, ?array $existing): ?int
+{
+    if (!array_key_exists('upload_quota_bytes', $data)) {
+        if ($existing && $existing['type'] === 'upload') {
+            return $existing['upload_quota_bytes'] !== null ? (int) $existing['upload_quota_bytes'] : null;
+        }
+
+        return (int) psst_config()['default_upload_quota_bytes'] ?: null;
+    }
+
+    $value = trim((string) $data['upload_quota_bytes']);
+    if ($value === '') {
+        return null;
+    }
+
+    if (!ctype_digit($value) || (int) $value < 1) {
+        psst_json(['error' => 'The storage limit must be a positive number.'], 400);
+    }
+
+    return (int) $value;
 }

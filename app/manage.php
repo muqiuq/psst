@@ -3,11 +3,14 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/functions.php';
+
+header('Cache-Control: no-store');
 ?><!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
     <title>PSST</title>
     <link rel="stylesheet" href="css/bootstrap.min.css">
     <link rel="stylesheet" href="<?= psst_html(psst_asset('css/psst.css')) ?>">
@@ -22,9 +25,10 @@ require_once __DIR__ . '/functions.php';
                 <label class="form-label" for="login-password">Password</label>
                 <input class="form-control mb-3" id="login-password" name="password" type="password" autocomplete="current-password" required>
                 <label class="form-label" for="login-htp">HTP</label>
-                <input class="form-control mb-3" id="login-htp" name="htp" inputmode="numeric" pattern="-?[0-9]+" autocomplete="off" required>
+                <input class="form-control" id="login-htp" name="htp" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" placeholder="6 digits" autocomplete="off" required>
+                <div class="form-text mb-3">Each HTP number works only once.</div>
                 <button class="btn btn-primary w-100" type="submit">Sign in</button>
-                <div id="login-error" class="alert alert-danger mt-3 mb-0 d-none"></div>
+                <div id="login-error" class="alert alert-danger mt-3 mb-0 d-none" role="alert"></div>
             </form>
         </section>
 
@@ -42,9 +46,22 @@ require_once __DIR__ . '/functions.php';
 
             <div id="app-alert" class="alert d-none" role="status"></div>
 
+            <div id="share-result" class="alert alert-success d-none" role="status">
+                <div class="d-flex align-items-start justify-content-between gap-2 mb-2">
+                    <div class="fw-semibold" id="share-result-title">Share created</div>
+                    <button type="button" class="btn-close" id="share-result-close" aria-label="Close"></button>
+                </div>
+                <div class="input-group">
+                    <input class="form-control" id="share-result-url" readonly aria-label="Share link">
+                    <button class="btn btn-outline-secondary" id="share-result-copy" type="button">Copy</button>
+                    <button class="btn btn-outline-secondary" id="share-result-qr" type="button">QR</button>
+                </div>
+                <div class="small mt-2 d-none" id="share-result-note"></div>
+            </div>
+
             <div class="row g-3">
                 <section class="col-12 col-xl-4">
-                    <form id="share-form" class="bg-white border rounded p-3" enctype="multipart/form-data">
+                    <form id="share-form" class="bg-white border rounded p-3" enctype="multipart/form-data" novalidate>
                         <div class="d-flex align-items-center justify-content-between mb-3">
                             <h2 class="h5 mb-0" id="form-title">New share</h2>
                             <button class="btn btn-sm btn-outline-secondary d-none" id="cancel-edit-button" type="button">Cancel</button>
@@ -60,7 +77,7 @@ require_once __DIR__ . '/functions.php';
                         </select>
 
                         <label class="form-label" for="share-title">Title</label>
-                        <input class="form-control mb-3" id="share-title" name="title" maxlength="160">
+                        <input class="form-control mb-3" id="share-title" name="title" maxlength="160" placeholder="Optional">
 
                         <div id="text-fields">
                             <label class="form-label" for="share-text">Text</label>
@@ -83,34 +100,44 @@ require_once __DIR__ . '/functions.php';
                                 <input class="form-check-input" id="share-upload-token" type="checkbox" checked>
                                 <label class="form-check-label" for="share-upload-token">Require an upload token</label>
                             </div>
+                            <label class="form-label" for="share-upload-quota">Storage limit (MB)</label>
+                            <input class="form-control" id="share-upload-quota" type="number" min="1" step="1" inputmode="numeric" placeholder="No limit">
+                            <div class="form-text mb-3">Total size of all received files. Leave empty for no limit.</div>
                             <div id="upload-info" class="d-none">
-                                <label class="form-label">Upload URL</label>
+                                <label class="form-label">Storage used</label>
+                                <div class="progress mb-1" role="progressbar" aria-label="Storage used" aria-valuemin="0" aria-valuemax="100" id="upload-usage">
+                                    <div class="progress-bar" id="upload-usage-bar" style="width: 0%"></div>
+                                </div>
+                                <div class="small text-muted mb-3" id="upload-usage-text"></div>
+                                <label class="form-label" for="upload-url">Upload URL</label>
                                 <div class="input-group mb-3">
                                     <input class="form-control" id="upload-url" readonly>
                                     <button class="btn btn-outline-secondary" id="copy-upload-url" type="button">Copy</button>
                                 </div>
-                                <label class="form-label">One-liners</label>
-                                <div class="mb-2">
-                                    <div class="small text-muted">Linux (multipart)</div>
-                                    <div class="input-group">
-                                        <input class="form-control font-monospace small" id="cmd-curl-multipart" readonly>
-                                        <button class="btn btn-outline-secondary" data-copy-target="cmd-curl-multipart" type="button">Copy</button>
+                                <details class="mb-3">
+                                    <summary class="form-label">Command-line one-liners</summary>
+                                    <div class="mt-2 mb-2">
+                                        <div class="small text-muted">Linux (multipart)</div>
+                                        <div class="input-group">
+                                            <input class="form-control font-monospace small" id="cmd-curl-multipart" readonly>
+                                            <button class="btn btn-outline-secondary" data-copy-target="cmd-curl-multipart" type="button">Copy</button>
+                                        </div>
                                     </div>
-                                </div>
-                                <div class="mb-2">
-                                    <div class="small text-muted">Linux (raw body)</div>
-                                    <div class="input-group">
-                                        <input class="form-control font-monospace small" id="cmd-curl-raw" readonly>
-                                        <button class="btn btn-outline-secondary" data-copy-target="cmd-curl-raw" type="button">Copy</button>
+                                    <div class="mb-2">
+                                        <div class="small text-muted">Linux (raw body)</div>
+                                        <div class="input-group">
+                                            <input class="form-control font-monospace small" id="cmd-curl-raw" readonly>
+                                            <button class="btn btn-outline-secondary" data-copy-target="cmd-curl-raw" type="button">Copy</button>
+                                        </div>
                                     </div>
-                                </div>
-                                <div class="mb-3">
-                                    <div class="small text-muted">MikroTik RouterOS</div>
-                                    <div class="input-group">
-                                        <input class="form-control font-monospace small" id="cmd-mikrotik" readonly>
-                                        <button class="btn btn-outline-secondary" data-copy-target="cmd-mikrotik" type="button">Copy</button>
+                                    <div>
+                                        <div class="small text-muted">MikroTik RouterOS</div>
+                                        <div class="input-group">
+                                            <input class="form-control font-monospace small" id="cmd-mikrotik" readonly>
+                                            <button class="btn btn-outline-secondary" data-copy-target="cmd-mikrotik" type="button">Copy</button>
+                                        </div>
                                     </div>
-                                </div>
+                                </details>
                                 <label class="form-label">Received files (<span id="upload-file-count">0</span>)</label>
                                 <ul class="list-group mb-3" id="upload-file-list">
                                     <li class="list-group-item text-muted small">No files received yet.</li>
@@ -125,11 +152,43 @@ require_once __DIR__ . '/functions.php';
 
                         <div id="password-fields" class="d-none">
                             <label class="form-label" for="share-password">Encryption password</label>
-                            <input class="form-control mb-3" id="share-password" type="password" minlength="8" autocomplete="new-password">
+                            <div class="input-group">
+                                <input class="form-control" id="share-password" type="password" minlength="8" autocomplete="new-password">
+                                <button class="btn btn-outline-secondary" id="toggle-share-password" type="button">Show</button>
+                                <button class="btn btn-outline-secondary" id="generate-share-password" type="button">Generate</button>
+                            </div>
+                            <div class="form-text mb-3" id="password-hint">At least 8 characters. Send it to the recipient separately; the server never sees it.</div>
                         </div>
 
-                        <label class="form-label" for="secret-code">Secret code</label>
-                        <input class="form-control mb-3" id="secret-code" autocomplete="off">
+                        <div id="secret-fields" class="mb-3">
+                            <label class="form-label" for="secret-code">Secret code</label>
+                            <input class="form-control" id="secret-code" autocomplete="off" placeholder="None">
+                            <div class="form-text" id="secret-code-hint">Visitors must enter this code before the share opens.</div>
+                            <div class="form-check mt-1 d-none" id="remove-secret-row">
+                                <input class="form-check-input" id="remove-secret-code" type="checkbox">
+                                <label class="form-check-label" for="remove-secret-code">Remove the current secret code</label>
+                            </div>
+                        </div>
+
+                        <div class="row g-2 mb-1">
+                            <div class="col-12 col-sm-6 col-xl-12 col-xxl-6">
+                                <label class="form-label" for="share-expiry" id="share-expiry-label">Expires</label>
+                                <select class="form-select" id="share-expiry">
+                                    <option value="never">Never</option>
+                                    <option value="3600">In 1 hour</option>
+                                    <option value="86400">In 1 day</option>
+                                    <option value="604800">In 7 days</option>
+                                    <option value="2592000">In 30 days</option>
+                                    <option value="custom">Pick a date…</option>
+                                </select>
+                                <input class="form-control mt-2 d-none" id="share-expiry-custom" type="datetime-local" aria-label="Expiry date">
+                            </div>
+                            <div class="col-12 col-sm-6 col-xl-12 col-xxl-6" id="max-views-field">
+                                <label class="form-label" for="share-max-views">View limit</label>
+                                <input class="form-control" id="share-max-views" type="number" min="1" step="1" inputmode="numeric" placeholder="Unlimited">
+                            </div>
+                        </div>
+                        <div class="form-text mb-3" id="limit-hint"></div>
 
                         <button class="btn btn-primary w-100" id="save-button" type="submit">Create share</button>
                     </form>
@@ -137,13 +196,16 @@ require_once __DIR__ . '/functions.php';
 
                 <section class="col-12 col-xl-8">
                     <div class="bg-white border rounded overflow-hidden">
+                        <div class="p-2 border-bottom">
+                            <input class="form-control form-control-sm" id="share-filter" type="search" placeholder="Filter by title, link or type" aria-label="Filter shares">
+                        </div>
                         <div class="table-responsive">
                             <table class="table table-hover align-middle mb-0">
                                 <thead class="table-light">
                                     <tr>
                                         <th>Share</th>
                                         <th>Type</th>
-                                        <th>Security</th>
+                                        <th>Status</th>
                                         <th class="text-end">Actions</th>
                                     </tr>
                                 </thead>
