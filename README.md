@@ -100,7 +100,8 @@ limits and the login block apply to everyone at once.
 Other applications can create shares through `app/api.php`. Create an API key in the manager
 under **API**; the key is shown once and stored only as a hash. Each key can only read and
 delete the shares it created. The full documentation opens from the same dialog
-(`api-docs.php`, manager login required). Send the key in the `Authorization: Bearer` header and
+(`api-docs.php`, manager login required); developers of the other application can use the
+standalone integration guide in [`docs/api.md`](docs/api.md). Send the key in the `Authorization: Bearer` header and
 use HTTPS. After `max_failed_api_auth_per_window` failed attempts in an hour, the client IP is
 refused until the hour is over.
 

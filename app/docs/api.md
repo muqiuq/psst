@@ -122,8 +122,9 @@ The response has status `201`:
 ```
 
 Send `url` to the recipient. For Markdown, that page shows the rendered document with
-buttons to copy or download the source. `download_url` returns the raw `.md` file
-directly and also counts as a view.
+buttons to copy or download the source. `download_url` downloads the raw file and also
+counts as a view. For a share with a view limit it first shows the same click-to-open
+page as `url`.
 
 A share with a secret code asks for it on the share page. To skip the prompt, append it
 to the link: `&_secretCode=CODE`. Anyone with that link can then open the share.
