@@ -17,3 +17,6 @@ app/data/files/*
 
 app/config.php
 
+
+# Test results and screenshots
+tests/output/
