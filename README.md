@@ -9,6 +9,7 @@ PSST is a small vanilla PHP sharing tool for Apache. It lets an admin create sho
 - SQLite database with automatic migrations
 - Apache `.htaccess` protection for stored files and runtime data
 - Text, Markdown, link, and file shares with random UUID URLs; Markdown is rendered as a formatted page (dependency-free, raw HTML is shown as text)
+- Sites: publish a single HTML file as a web page in a browser sandbox, optionally with server-side storage that all visitors share or that every visitor gets for themselves
 - Expiry dates and view limits per share (a limit of 1 is burn after reading); used-up shares are deleted
 - Upload drop boxes with an optional token, a per-drop-box storage limit, an optional closing date, multi-file selection, and upload progress
 - Mobile-friendly uploads with explicit size limits and readable error messages
@@ -104,6 +105,21 @@ delete the shares it created. The full documentation opens from the same dialog
 standalone integration guide in [`docs/api.md`](docs/api.md). Send the key in the `Authorization: Bearer` header and
 use HTTPS. After `max_failed_api_auth_per_window` failed attempts in an hour, the client IP is
 refused until the hour is over.
+
+### Sites
+
+A site is one self-contained HTML file published under a PSST link. PSST serves it with
+`Content-Security-Policy: sandbox` (without `allow-same-origin`), so its JavaScript cannot
+reach the manager or other applications on the same host; the page therefore has no
+`localStorage` or cookies of its own. Instead, PSST adds `window.psst.storage`, a small
+key/value store on the server. Storage modes: off, read-only (an editor link writes),
+shared (all visitors), and per visitor (each visitor gets a store, recognized by a cookie
+PSST sets; the owner sees all stores). Limits and defaults are in `app/config.php`
+(`max_site_bytes`, `default_site_storage_bytes`, `default_visitor_storage_bytes`,
+`default_site_visitor_total_bytes`, `default_visitor_lifetime_days`,
+`max_site_writes_per_minute`). Everything is also available through the API. The guide for
+building sites is in the manager under **API** → *Building sites* (`app/docs/sites.md`); the
+design is in [`docs/proposal-html-sites.md`](docs/proposal-html-sites.md).
 
 ### Expiry and view limits
 

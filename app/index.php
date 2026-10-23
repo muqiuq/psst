@@ -51,6 +51,10 @@ try {
 		psst_render_secret_prompt($share);
 	}
 
+	if ($share['type'] === 'site') {
+		psst_render_site($share);
+	}
+
 	if ((bool) $share['is_encrypted']) {
 		if (($_GET['raw'] ?? '') === '1') {
 			psst_send_encrypted_payload($share);
@@ -753,6 +757,30 @@ function psst_render_revealed_text(array $share)
 	</main>
 	<?php
 	psst_page_end(['js/share-view.js']);
+}
+
+/**
+ * Serves a site in the browser sandbox (see sites.php), with the storage script added
+ * when the site has storage.
+ */
+function psst_render_site(array $share)
+{
+	if (!psst_register_view($share)) {
+		psst_render_gone();
+	}
+
+	$path = $share['stored_filename'] ? psst_stored_file_path($share['stored_filename']) : '';
+	if ($path === '' || !is_file($path)) {
+		psst_render_message('Site not found', 'The stored page is missing.', 404);
+	}
+
+	$html = psst_site_page($share, (string) file_get_contents($path));
+
+	header('Content-Type: text/html; charset=utf-8');
+	header('Content-Security-Policy: ' . PSST_SITE_SANDBOX);
+	header('X-Content-Type-Options: nosniff');
+	echo $html;
+	exit;
 }
 
 function psst_render_markdown_share(array $share)

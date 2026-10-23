@@ -11,18 +11,32 @@ require_once __DIR__ . '/functions.php';
 psst_configure_error_output();
 header('Cache-Control: no-store');
 
-const PSST_API_SHARE_TYPES = ['markdown', 'text', 'link', 'file'];
+const PSST_API_SHARE_TYPES = ['markdown', 'text', 'link', 'file', 'site'];
+const PSST_API_STORAGE_ACTIONS = [
+    'storage_list', 'storage_get', 'storage_set', 'storage_remove', 'storage_append', 'storage_increment',
+    'storage_export', 'storage_import', 'storage_clear', 'visitors',
+];
 
 try {
     psst_db();
     $apiKey = psst_integration_authenticate();
 
-    switch ((string) ($_GET['action'] ?? '')) {
+    $action = (string) ($_GET['action'] ?? '');
+
+    // Site storage, with the same owner rights as in the manager.
+    if (in_array($action, PSST_API_STORAGE_ACTIONS, true)) {
+        psst_site_owner_action($action, psst_integration_own_share($apiKey));
+    }
+
+    switch ($action) {
         case 'status':
             psst_integration_status($apiKey);
             break;
         case 'create':
             psst_integration_create($apiKey);
+            break;
+        case 'update':
+            psst_integration_update($apiKey);
             break;
         case 'share':
             psst_integration_get($apiKey);
@@ -45,22 +59,9 @@ try {
  */
 function psst_integration_token(): string
 {
-    $header = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+    $token = psst_request_bearer_token();
 
-    if ($header === '' && function_exists('apache_request_headers')) {
-        foreach (apache_request_headers() as $name => $value) {
-            if (strcasecmp((string) $name, 'Authorization') === 0) {
-                $header = (string) $value;
-                break;
-            }
-        }
-    }
-
-    if (preg_match('/^\s*Bearer\s+(\S+)\s*$/i', $header, $match) === 1) {
-        return $match[1];
-    }
-
-    return trim((string) ($_SERVER['HTTP_X_API_KEY'] ?? ''));
+    return $token !== '' ? $token : trim((string) ($_SERVER['HTTP_X_API_KEY'] ?? ''));
 }
 
 function psst_integration_authenticate(): array
@@ -87,6 +88,11 @@ function psst_integration_authenticate(): array
 function psst_integration_share(array $share): array
 {
     $hasDownload = in_array($share['type'], ['file', 'markdown'], true);
+    $site = null;
+    if ($share['type'] === 'site') {
+        psst_site_expire_visitors($share);
+        $site = psst_site_info($share);
+    }
 
     return [
         'uuid' => $share['uuid'],
@@ -104,6 +110,7 @@ function psst_integration_share(array $share): array
         'view_count' => (int) $share['view_count'],
         'views_remaining' => psst_share_views_remaining($share),
         'created_at' => psst_iso_sqlite_time($share['created_at']),
+        'site' => $site,
     ];
 }
 
@@ -171,6 +178,33 @@ function psst_integration_create(array $apiKey)
     $share['api_key_id'] = (int) $apiKey['id'];
 
     psst_json(['share' => psst_integration_share(psst_share_create($share))], 201);
+}
+
+/**
+ * Changes a share; fields that are not sent stay as they are. For sites, new HTML keeps
+ * the link and the stored data.
+ */
+function psst_integration_update(array $apiKey)
+{
+    psst_integration_require_method(['POST']);
+
+    if (psst_post_body_too_large()) {
+        psst_json(['error' => psst_upload_limit_message(), 'max_upload_bytes' => psst_max_upload_bytes()], 413);
+    }
+
+    $existing = psst_integration_own_share($apiKey);
+    $data = psst_request_data();
+    $type = trim((string) ($data['type'] ?? $existing['type']));
+    if (!in_array($type, PSST_API_SHARE_TYPES, true)) {
+        psst_json(['error' => 'type must be one of: ' . implode(', ', PSST_API_SHARE_TYPES) . '.'], 400);
+    }
+    if (psst_bool($data['is_encrypted'] ?? false)) {
+        psst_json(['error' => 'Encrypted shares cannot be created through the API.'], 400);
+    }
+
+    $share = psst_build_share_payload($existing);
+
+    psst_json(['share' => psst_integration_share(psst_share_apply_update($existing, $share))]);
 }
 
 function psst_integration_get(array $apiKey)

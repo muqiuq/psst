@@ -79,7 +79,7 @@ Checks the key and returns the server's limits.
   "key": "PLM",
   "app_version": "1.3.0",
   "max_upload_bytes": 104857600,
-  "share_types": ["markdown", "text", "link", "file"]
+  "share_types": ["markdown", "text", "link", "file", "site"]
 }
 ```
 
@@ -93,9 +93,9 @@ Creates a share. Returns `201` and `{"share": {...}}` with the
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `type` | string | yes | `markdown`, `text`, `link` or `file` |
-| `content` | string | for `markdown`, `text`, `link` | The Markdown source, the text, or the URL to redirect to |
-| `file` | file | for `file` | The file, as a `multipart/form-data` field |
+| `type` | string | yes | `markdown`, `text`, `link`, `file` or `site` (see [Sites](#sites)) |
+| `content` | string | for `markdown`, `text`, `link`; or `site` | The Markdown source, the text, the URL to redirect to, or the site's HTML |
+| `file` | file | for `file`; or `site` | The file, as a `multipart/form-data` field |
 | `title` | string | no | Shown on the share page; longer than 160 characters is cut. For Markdown it is also the name of the downloaded `.md` file |
 | `expires_at` | string or number | no | When PSST deletes the share: ISO 8601 (`2026-12-31T23:00:00Z`) or a Unix timestamp in seconds. Must be in the future |
 | `max_views` | integer | no | Delete the share after this many views, 1 to 1,000,000. `1` means burn after reading |
@@ -158,15 +158,28 @@ opened. A share that expired, used up its views or was deleted answers `404`.
 
 ### `POST api.php?action=delete&uuid=UUID`
 
-Also accepts `DELETE`. Deletes the share and its file immediately and returns
-`{"deleted": true}`. The link stops working right away.
+Also accepts `DELETE`. Deletes the share, its file and, for sites, all stored data
+immediately and returns `{"deleted": true}`. The link stops working right away.
+
+### `POST api.php?action=update&uuid=UUID`
+
+Changes a share of this key. Send only the fields to change, with the same names as for
+`create`; everything else stays, including the link. A new `file` (or, for sites, new
+`content`) replaces the stored one.
+
+```sh
+curl -X POST "https://psst.example.com/api.php?action=update&uuid=UUID" \
+  -H "Authorization: Bearer $PSST_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "Release notes 2.4.1", "max_views": 10}'
+```
 
 ## Share fields
 
 | Field | Description |
 | --- | --- |
 | `uuid` | The share's ID, used by `share` and `delete` |
-| `type` | `markdown`, `text`, `link` or `file` |
+| `type` | `markdown`, `text`, `link`, `file` or `site` |
 | `title` | The title, or an empty string |
 | `url` | The link for the recipient |
 | `download_url` | Direct download for `file` and `markdown`, otherwise `null`; see [What the recipient sees](#what-the-recipient-sees) |
@@ -180,6 +193,7 @@ Also accepts `DELETE`. Deletes the share and its file immediately and returns
 | `view_count` | How often the share was opened |
 | `views_remaining` | Views left, or `null` for unlimited |
 | `created_at` | When the share was created |
+| `site` | For sites, the site details (see [Sites](#sites)), otherwise `null` |
 
 ## What the recipient sees
 
@@ -226,6 +240,93 @@ Not supported, which matters when you export documents:
 - Footnotes, math, Mermaid diagrams and emoji shortcodes appear as their source text
   (Mermaid inside a code block stays a code block).
 
+## Sites
+
+A site is a single HTML file that PSST serves as a web page, optionally with storage on
+the server. The page itself uses `window.psst.storage`; how to build such pages is described under *API* → *Building sites* in the PSST manager (source: `app/docs/sites.md` in the repository).
+
+Create a site with `"type": "site"` and the HTML as `content`, or upload it as `file`.
+Sites take these additional fields in `create` and `update`:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `storage_mode` | string | `off` (default), `read` (visitors read, the editor link writes), `shared` (all visitors read and write) or `visitor` (each visitor has a store of their own) |
+| `storage_quota_bytes` | integer or empty | Limit of the shared store, by default 1 MB. Empty for no limit |
+| `visitor_quota_bytes` | integer or empty | Limit of each visitor store, by default 256 KB |
+| `visitor_total_bytes` | integer or empty | Limit of all visitor stores together, by default 20 MB |
+| `visitor_lifetime_days` | integer | How long a visitor is remembered after the last visit, by default 90. `0` means until the browser is closed |
+
+Expiry and secret codes work as for other shares. `max_views` does not apply to sites
+(every reload would count), and sites cannot be encrypted. Deleting a site, or its
+expiry, deletes all of its stored data.
+
+```sh
+curl -X POST "https://psst.example.com/api.php?action=create" \
+  -H "Authorization: Bearer $PSST_KEY" \
+  -F type=site \
+  -F title="Team checklist" \
+  -F storage_mode=shared \
+  -F "file=@checklist.html;type=text/html"
+```
+
+The share of a site has a `site` object:
+
+```json
+"site": {
+  "file_name": "checklist.html",
+  "storage_mode": "shared",
+  "editor_url": "https://psst.example.com/index.php?id=UUID&edit=KEY",
+  "storage_quota_bytes": 1048576,
+  "visitor_quota_bytes": 262144,
+  "visitor_total_bytes": 20971520,
+  "visitor_lifetime_days": 90,
+  "storage_used_bytes": 512,
+  "visitor_used_bytes": 0,
+  "visitor_count": 0
+}
+```
+
+`editor_url` opens the site with write access in read-only mode; keep it private.
+Replacing the HTML with `update` keeps the link, the editor link and the stored data.
+
+### Site storage
+
+The owner, here the API key that created the site, can read and change every store of
+the site, whatever its mode. Without `visitor`, an action uses the shared store; with
+`visitor=ID` (IDs come from `visitors`) it uses that visitor's store. The storage limits
+apply. Request bodies are JSON (`Content-Type: application/json`).
+
+| Action | Method | Parameters and body | Result |
+| --- | --- | --- | --- |
+| `storage_list` | GET | `uuid`, optional `visitor` | `{"items": [{"key", "size", "version", "updated_at"}]}` |
+| `storage_get` | GET | `uuid`, `key`, optional `visitor` | `{"key", "value", "version", "exists"}`; version `0` if the key does not exist |
+| `storage_set` | POST | `uuid`, optional `visitor`; body `{"key", "value", "version"}` | `{"key", "version"}`. With `version`, only if the key still has it; otherwise `409` |
+| `storage_remove` | POST | `uuid`, optional `visitor`; body `{"key", "version"}` | `{"key", "removed"}` |
+| `storage_append` | POST | `uuid`, optional `visitor`; body `{"key", "item"}` | `{"key", "version", "length"}`; adds to a list, created if missing |
+| `storage_increment` | POST | `uuid`, optional `visitor`; body `{"key", "by"}` | `{"key", "value", "version"}`; `by` defaults to 1 |
+| `visitors` | GET | `uuid` | `{"visitors": [{"id", "first_seen", "last_seen", "size", "keys"}]}` |
+| `storage_export` | GET | `uuid` | All data: `{"site", "exported_at", "shared": {...}, "visitors": {...}}` |
+| `storage_import` | POST | `uuid`, optional `replace=1`; body: an export document | `{"imported"}`. Merges (same keys are overwritten); `replace=1` deletes everything first |
+| `storage_clear` | POST | `uuid`, optional `visitor` | `{"cleared": true}`. Deletes that visitor's store, or without `visitor` all data |
+
+Values are any JSON up to 256 KB, keys up to 200 characters, at most 1,000 keys per
+store. A failing import changes nothing.
+
+A dashboard in read-only mode gets new numbers:
+
+```sh
+curl -X POST "https://psst.example.com/api.php?action=storage_set&uuid=UUID" \
+  -H "Authorization: Bearer $PSST_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"key": "stats", "value": {"open": 12, "done": 30}}'
+```
+
+All answers of a quiz in per-visitor mode:
+
+```sh
+curl -H "Authorization: Bearer $PSST_KEY" "https://psst.example.com/api.php?action=storage_export&uuid=UUID"
+```
+
 ## Errors
 
 | Status | Meaning | What to do |
@@ -234,7 +335,8 @@ Not supported, which matters when you export documents:
 | `401` | Missing, invalid or revoked API key | Stop and check the configuration; retrying counts toward the lockout |
 | `404` | Unknown action, or the share does not exist (any more) for this key | Treat the share as gone |
 | `405` | Wrong HTTP method; the `Allow` header lists the right ones | Fix the request |
-| `413` | The request is larger than `max_upload_bytes` | Send a smaller file |
+| `409` | Site storage: the version did not match, or `append`/`increment` hit a value that is not a list or number | Load the value again and retry |
+| `413` | The request is larger than `max_upload_bytes`, or a site's storage is full | Send less, or ask for a higher storage limit |
 | `429` | Too many failed authentication attempts from this IP address | Wait up to an hour |
 | `500` | Server error; the details are in the PSST server log | Retry later; tell the PSST administrator if it persists |
 

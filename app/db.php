@@ -29,6 +29,12 @@ function psst_default_config(): array
         'server_secret_code' => '',
         'max_upload_bytes' => 104857600,
         'default_upload_quota_bytes' => 1073741824,
+        'max_site_bytes' => 5242880,
+        'default_site_storage_bytes' => 1048576,
+        'default_visitor_storage_bytes' => 262144,
+        'default_site_visitor_total_bytes' => 20971520,
+        'default_visitor_lifetime_days' => 90,
+        'max_site_writes_per_minute' => 60,
         'trusted_proxies' => [],
         'rate_limit_window_seconds' => 3600,
         'max_requests_per_window' => 50,
@@ -251,6 +257,52 @@ function psst_run_migrations(PDO $pdo): void
             );
             $pdo->exec('ALTER TABLE shares ADD COLUMN api_key_id INTEGER');
             $pdo->exec('CREATE INDEX idx_shares_api_key ON shares (api_key_id)');
+        },
+        11 => static function (PDO $pdo): void {
+            // Sites: single HTML files with optional key/value storage, shared or per visitor.
+            foreach ([
+                'storage_mode TEXT',
+                'storage_quota_bytes INTEGER',
+                'visitor_quota_bytes INTEGER',
+                'visitor_total_bytes INTEGER',
+                'visitor_lifetime_days INTEGER',
+                'editor_key TEXT',
+            ] as $column) {
+                $pdo->exec('ALTER TABLE shares ADD COLUMN ' . $column);
+            }
+
+            // visitor_id is empty for the store all visitors share.
+            $pdo->exec(
+                'CREATE TABLE site_storage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    share_id INTEGER NOT NULL,
+                    visitor_id TEXT NOT NULL DEFAULT \'\',
+                    item_key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    size INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    updated_ip TEXT,
+                    UNIQUE (share_id, visitor_id, item_key),
+                    FOREIGN KEY (share_id) REFERENCES shares (id) ON DELETE CASCADE
+                )'
+            );
+            $pdo->exec(
+                'CREATE TABLE site_visitors (
+                    share_id INTEGER NOT NULL,
+                    visitor_id TEXT NOT NULL,
+                    first_seen INTEGER NOT NULL,
+                    last_seen INTEGER NOT NULL,
+                    PRIMARY KEY (share_id, visitor_id),
+                    FOREIGN KEY (share_id) REFERENCES shares (id) ON DELETE CASCADE
+                )'
+            );
+            $pdo->exec('CREATE INDEX idx_site_visitors_last_seen ON site_visitors (share_id, last_seen)');
+
+            // Key for signing site access tokens and deriving visitor IDs; never leaves the server.
+            $pdo->exec('CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL)');
+            $statement = $pdo->prepare('INSERT INTO settings (name, value) VALUES (\'site_token_key\', :value)');
+            $statement->execute(['value' => bin2hex(random_bytes(32))]);
         },
     ];
 

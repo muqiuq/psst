@@ -16,6 +16,14 @@ return [
     'max_upload_bytes' => 104857600,
     // Storage limit for new drop boxes (1 GB); each drop box can change it in the manager.
     'default_upload_quota_bytes' => 1073741824,
+    // Sites: largest HTML file, default storage limits for new sites, and changes per
+    // visitor and minute. Each site can change its limits in the manager.
+    'max_site_bytes' => 5242880,
+    'default_site_storage_bytes' => 1048576,
+    'default_visitor_storage_bytes' => 262144,
+    'default_site_visitor_total_bytes' => 20971520,
+    'default_visitor_lifetime_days' => 90,
+    'max_site_writes_per_minute' => 60,
     // Reverse proxies (IPs or CIDR ranges) whose X-Forwarded-For header is trusted for the client IP.
     'trusted_proxies' => [],
     'rate_limit_window_seconds' => 3600,

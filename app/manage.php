@@ -57,6 +57,11 @@ header('Cache-Control: no-store');
                     <button class="btn btn-outline-secondary" id="share-result-copy" type="button">Copy</button>
                     <button class="btn btn-outline-secondary" id="share-result-qr" type="button">QR</button>
                 </div>
+                <div class="input-group mt-2 d-none" id="share-result-editor">
+                    <span class="input-group-text">Editor link</span>
+                    <input class="form-control" id="share-result-editor-url" readonly aria-label="Editor link">
+                    <button class="btn btn-outline-secondary" data-copy-target="share-result-editor-url" type="button">Copy</button>
+                </div>
                 <div class="small mt-2 d-none" id="share-result-note"></div>
             </div>
 
@@ -76,6 +81,7 @@ header('Cache-Control: no-store');
                             <option value="link">Link</option>
                             <option value="file">File</option>
                             <option value="upload">Upload (drop box)</option>
+                            <option value="site">Site (HTML page)</option>
                         </select>
 
                         <label class="form-label" for="share-title">Title</label>
@@ -145,6 +151,57 @@ header('Cache-Control: no-store');
                                 <ul class="list-group mb-3" id="upload-file-list">
                                     <li class="list-group-item text-muted small">No files received yet.</li>
                                 </ul>
+                            </div>
+                        </div>
+
+                        <div id="site-fields" class="d-none">
+                            <label class="form-label" for="share-site-file">HTML file</label>
+                            <input class="form-control" id="share-site-file" type="file" accept=".html,.htm,text/html">
+                            <div class="form-text" id="site-file-hint">One self-contained .html file.</div>
+                            <details class="mb-3" id="site-html-details">
+                                <summary class="small">Or paste the HTML</summary>
+                                <textarea class="form-control font-monospace small mt-2" id="share-site-html" rows="6" spellcheck="false"></textarea>
+                            </details>
+
+                            <label class="form-label" for="share-storage-mode">Storage</label>
+                            <select class="form-select" id="share-storage-mode">
+                                <option value="off">Off</option>
+                                <option value="read">Read-only: visitors read, the editor link writes</option>
+                                <option value="shared">Shared: every visitor reads and writes</option>
+                                <option value="visitor">Per visitor: everyone gets their own storage</option>
+                            </select>
+                            <div class="form-text mb-2" id="storage-mode-hint"></div>
+
+                            <div class="row g-2 mb-2" id="storage-limit-fields">
+                                <div class="col-6" id="storage-quota-field">
+                                    <label class="form-label small mb-1" for="share-storage-quota">Storage limit (KB)</label>
+                                    <input class="form-control form-control-sm" id="share-storage-quota" type="number" min="1" step="1" inputmode="numeric" placeholder="No limit">
+                                </div>
+                                <div class="col-6 visitor-field">
+                                    <label class="form-label small mb-1" for="share-visitor-quota">Per visitor (KB)</label>
+                                    <input class="form-control form-control-sm" id="share-visitor-quota" type="number" min="1" step="1" inputmode="numeric" placeholder="No limit">
+                                </div>
+                                <div class="col-6 visitor-field">
+                                    <label class="form-label small mb-1" for="share-visitor-total">All visitors (MB)</label>
+                                    <input class="form-control form-control-sm" id="share-visitor-total" type="number" min="1" step="1" inputmode="numeric" placeholder="No limit">
+                                </div>
+                                <div class="col-6 visitor-field">
+                                    <label class="form-label small mb-1" for="share-visitor-days">Remember visitors (days)</label>
+                                    <input class="form-control form-control-sm" id="share-visitor-days" type="number" min="0" max="3650" step="1" inputmode="numeric">
+                                </div>
+                            </div>
+                            <div class="form-text mb-3" id="storage-note">
+                                Storage is not encrypted. If a site stores personal data, tell its visitors.
+                                <a href="api-docs.php?doc=sites" target="_blank" rel="noopener">How sites use storage</a>
+                            </div>
+
+                            <div id="site-info" class="d-none mb-3">
+                                <label class="form-label" for="site-editor-url">Editor link</label>
+                                <div class="input-group mb-1">
+                                    <input class="form-control" id="site-editor-url" readonly>
+                                    <button class="btn btn-outline-secondary" data-copy-target="site-editor-url" type="button">Copy</button>
+                                </div>
+                                <div class="form-text">Opens the site with write access in read-only mode. Keep it to yourself.</div>
                             </div>
                         </div>
 
@@ -247,6 +304,66 @@ header('Cache-Control: no-store');
                     </div>
                 </div>
             </div>
+            <div class="modal fade" id="storage-modal" tabindex="-1" aria-hidden="true" aria-labelledby="storage-modal-title">
+                <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h2 class="modal-title h5 text-break" id="storage-modal-title">Storage</h2>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div id="storage-error" class="alert alert-danger d-none" role="alert"></div>
+                            <div class="small text-muted mb-3" id="storage-usage"></div>
+                            <div class="row g-2 align-items-end mb-3">
+                                <div class="col-lg-5">
+                                    <label class="form-label" for="storage-store">Store</label>
+                                    <select class="form-select" id="storage-store"></select>
+                                </div>
+                                <div class="col-lg-7 d-flex flex-wrap gap-2 justify-content-lg-end">
+                                    <button class="btn btn-outline-secondary" id="storage-refresh" type="button">Refresh</button>
+                                    <button class="btn btn-outline-secondary" id="storage-export" type="button">Export JSON</button>
+                                    <label class="btn btn-outline-secondary mb-0">
+                                        Import JSON<input id="storage-import" type="file" accept=".json,application/json" hidden>
+                                    </label>
+                                    <button class="btn btn-outline-danger d-none" id="storage-delete-visitor" type="button">Delete visitor</button>
+                                    <button class="btn btn-outline-danger" id="storage-clear" type="button">Delete all data</button>
+                                </div>
+                            </div>
+                            <div class="table-responsive mb-3">
+                                <table class="table table-sm align-middle mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Key</th>
+                                            <th>Size</th>
+                                            <th>Version</th>
+                                            <th>Changed</th>
+                                            <th class="text-end"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="storage-items"></tbody>
+                                </table>
+                            </div>
+                            <form id="storage-editor" class="border rounded p-2 bg-light" novalidate>
+                                <div class="row g-2">
+                                    <div class="col-md-4">
+                                        <label class="form-label small mb-1" for="storage-key">Key</label>
+                                        <input class="form-control form-control-sm font-monospace" id="storage-key" maxlength="200">
+                                    </div>
+                                    <div class="col-md-8">
+                                        <label class="form-label small mb-1" for="storage-value">Value (JSON)</label>
+                                        <textarea class="form-control form-control-sm font-monospace" id="storage-value" rows="6" spellcheck="false"></textarea>
+                                    </div>
+                                </div>
+                                <div class="d-flex justify-content-end gap-2 mt-2">
+                                    <button class="btn btn-sm btn-outline-secondary" id="storage-editor-new" type="button">New key</button>
+                                    <button class="btn btn-sm btn-primary" type="submit">Save value</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="modal fade" id="api-modal" tabindex="-1" aria-hidden="true" aria-labelledby="api-modal-title">
                 <div class="modal-dialog modal-lg modal-dialog-scrollable">
                     <div class="modal-content">

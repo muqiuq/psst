@@ -4,12 +4,13 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/models.php';
 require_once __DIR__ . '/markdown.php';
+require_once __DIR__ . '/sites.php';
 
 /**
  * Application version. Bump this on release; it is shown in the footer and is also
  * used to cache-bust the vendored CSS/JS so browsers pick up new assets after a deploy.
  */
-define('PSST_VERSION', '1.3.0');
+define('PSST_VERSION', '1.4.0');
 
 const PSST_REPO_URL = 'https://github.com/muqiuq/psst';
 const PSST_AUTHOR_NAME = 'Philipp Albrecht';
@@ -670,6 +671,11 @@ function psst_manager_share(array $share): array
     $public['max_views'] = $share['max_views'] !== null ? (int) $share['max_views'] : null;
     $public['view_count'] = (int) ($share['view_count'] ?? 0);
 
+    if (($share['type'] ?? '') === 'site') {
+        psst_site_expire_visitors($share);
+        $public['site'] = psst_site_info($share);
+    }
+
     if (($share['type'] ?? '') === 'upload') {
         $token = (string) ($share['upload_token'] ?? '');
         $files = psst_upload_files_for_share((int) $share['id']);
@@ -857,7 +863,7 @@ function psst_enforce_rate_limit(string $eventType, int $limit): void
     psst_rate_limit_record($eventType);
 }
 
-const PSST_SHARE_TYPES = ['text', 'markdown', 'link', 'file', 'upload'];
+const PSST_SHARE_TYPES = ['text', 'markdown', 'link', 'file', 'upload', 'site'];
 
 function psst_limit_chars(string $value, int $max): string
 {
@@ -876,7 +882,7 @@ function psst_build_share_payload(?array $existing): array
     $type = trim((string) ($data['type'] ?? $existing['type'] ?? ''));
 
     if (!in_array($type, PSST_SHARE_TYPES, true)) {
-        psst_json(['error' => 'Share type must be text, markdown, link, file, or upload.'], 400);
+        psst_json(['error' => 'Share type must be text, markdown, link, file, upload, or site.'], 400);
     }
 
     $isEncrypted = psst_bool($data['is_encrypted'] ?? $existing['is_encrypted'] ?? false);
@@ -950,6 +956,30 @@ function psst_build_share_payload(?array $existing): array
         $content = null;
     }
 
+    if ($type === 'site') {
+        if ($isEncrypted) {
+            psst_json(['error' => 'Sites cannot be encrypted: PSST adds its storage script to the page.'], 400);
+        }
+
+        $source = psst_payload_site_html($data);
+        if ($source === null && ($existing['type'] ?? '') !== 'site') {
+            psst_json(['error' => 'Sites need HTML: upload a file or send it as content.'], 400);
+        }
+
+        // Without new HTML the stored page stays, so the link and the data are kept.
+        if ($source !== null) {
+            $storedFilename = $uuid . '-' . bin2hex(random_bytes(8)) . '-site.html';
+            if (file_put_contents(psst_stored_file_path($storedFilename), $source['html']) === false) {
+                psst_json(['error' => 'Unable to store the site.'], 500);
+            }
+            $originalFilename = $source['name'];
+            $mimeType = 'text/html';
+            $fileSize = strlen($source['html']);
+        }
+
+        $content = null;
+    }
+
     if ($type === 'upload') {
         // Upload shares act as a write inbox: no inline content or owner-uploaded file.
         $content = null;
@@ -994,10 +1024,143 @@ function psst_build_share_payload(?array $existing): array
         'iti_secret_code' => psst_normalize_iti_secret_code($existing['iti_secret_code'] ?? null),
         'upload_token' => $uploadToken,
         'expires_at' => psst_payload_expires_at($data, $existing),
-        // A drop box is closed by its expiry; view limits do not apply to it.
-        'max_views' => $type === 'upload' ? null : psst_payload_max_views($data, $existing),
+        // A drop box is closed by its expiry, and every reload of a site would count as a
+        // view; view limits apply to neither.
+        'max_views' => in_array($type, ['upload', 'site'], true) ? null : psst_payload_max_views($data, $existing),
         'upload_quota_bytes' => $type === 'upload' ? psst_payload_upload_quota($data, $existing) : null,
+    ] + ($type === 'site' ? psst_payload_site_settings($data, $existing) : [
+        'storage_mode' => null,
+        'storage_quota_bytes' => null,
+        'visitor_quota_bytes' => null,
+        'visitor_total_bytes' => null,
+        'visitor_lifetime_days' => null,
+        'editor_key' => null,
+    ]);
+}
+
+/**
+ * The HTML of a site: an uploaded file ("file") or text ("content"). Null when the
+ * request brings neither, which keeps the current page on updates.
+ *
+ * @return array{html: string, name: string}|null
+ */
+function psst_payload_site_html(array $data): ?array
+{
+    $limit = (int) psst_config()['max_site_bytes'];
+    $tooLarge = sprintf('A site may be at most %s.', psst_format_bytes($limit));
+    $file = $_FILES['file'] ?? null;
+    $error = is_array($file) ? (int) ($file['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+
+    if ($error !== UPLOAD_ERR_NO_FILE) {
+        if ($error !== UPLOAD_ERR_OK) {
+            $status = in_array($error, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true) ? 413 : 400;
+            psst_json(['error' => psst_upload_error_message($error)], $status);
+        }
+        if ($limit > 0 && (int) $file['size'] > $limit) {
+            psst_json(['error' => $tooLarge], 413);
+        }
+        return ['html' => (string) file_get_contents((string) $file['tmp_name']), 'name' => psst_sanitize_filename((string) $file['name'])];
+    }
+
+    $content = (string) ($data['content'] ?? '');
+    if (trim($content) === '') {
+        return null;
+    }
+    if ($limit > 0 && strlen($content) > $limit) {
+        psst_json(['error' => $tooLarge], 413);
+    }
+
+    return ['html' => $content, 'name' => 'index.html'];
+}
+
+/**
+ * Storage settings of a site. New sites get the configured defaults; updates keep what
+ * the request does not mention.
+ */
+function psst_payload_site_settings(array $data, ?array $existing): array
+{
+    $current = ($existing['type'] ?? '') === 'site' ? $existing : null;
+    $config = psst_config();
+
+    $mode = (string) ($data['storage_mode'] ?? ($current['storage_mode'] ?? 'off'));
+    if (!in_array($mode, PSST_SITE_STORAGE_MODES, true)) {
+        psst_json(['error' => 'storage_mode must be one of: ' . implode(', ', PSST_SITE_STORAGE_MODES) . '.'], 400);
+    }
+
+    $bytes = static function (string $field, $default) use ($data, $current): ?int {
+        if (!array_key_exists($field, $data)) {
+            $value = $current !== null ? $current[$field] : ((int) $default ?: null);
+            return $value === null ? null : (int) $value;
+        }
+
+        $value = trim((string) $data[$field]);
+        if ($value === '') {
+            return null;
+        }
+        if (!ctype_digit($value) || (int) $value < 1) {
+            psst_json(['error' => $field . ' must be a positive number of bytes, or empty for no limit.'], 400);
+        }
+
+        return (int) $value;
+    };
+
+    $days = $current !== null ? (int) $current['visitor_lifetime_days'] : (int) $config['default_visitor_lifetime_days'];
+    if (array_key_exists('visitor_lifetime_days', $data)) {
+        $value = trim((string) $data['visitor_lifetime_days']);
+        if (!ctype_digit($value) || (int) $value > 3650) {
+            psst_json(['error' => 'visitor_lifetime_days must be 0 (until the browser closes) to 3650.'], 400);
+        }
+        $days = (int) $value;
+    }
+
+    return [
+        'storage_mode' => $mode,
+        'storage_quota_bytes' => $bytes('storage_quota_bytes', $config['default_site_storage_bytes']),
+        'visitor_quota_bytes' => $bytes('visitor_quota_bytes', $config['default_visitor_storage_bytes']),
+        'visitor_total_bytes' => $bytes('visitor_total_bytes', $config['default_site_visitor_total_bytes']),
+        'visitor_lifetime_days' => $days,
+        // Kept for the life of the site, so the editor link stays valid.
+        'editor_key' => $current['editor_key'] ?? psst_random_token(24),
     ];
+}
+
+/**
+ * Saves an edited share and cleans up what the edit made obsolete.
+ */
+function psst_share_apply_update(array $existing, array $share): array
+{
+    $updated = psst_share_update($existing['uuid'], $share);
+
+    if ($existing['stored_filename'] && $existing['stored_filename'] !== $updated['stored_filename']) {
+        psst_stored_file_unlink($existing['stored_filename']);
+    }
+
+    // A share that stops being a site keeps no site data.
+    if ($existing['type'] === 'site' && $updated['type'] !== 'site') {
+        psst_site_storage_delete_all((int) $existing['id']);
+    }
+
+    return $updated;
+}
+
+/**
+ * Bearer token from the Authorization header. PHP-FPM/CGI only see it through the
+ * rewrite rule in .htaccess; mod_php also offers apache_request_headers().
+ */
+function psst_request_bearer_token(): string
+{
+    $header = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+
+    if ($header === '' && function_exists('apache_request_headers')) {
+        foreach (apache_request_headers() as $name => $value) {
+            if (strcasecmp((string) $name, 'Authorization') === 0) {
+                $header = (string) $value;
+                break;
+            }
+        }
+    }
+
+    return preg_match('/^\s*Bearer\s+(\S+)\s*$/i', $header, $match) === 1 ? $match[1] : '';
 }
 
 function psst_payload_expires_at(array $data, ?array $existing): ?int

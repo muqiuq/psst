@@ -29,11 +29,13 @@ function psst_share_create(array $share): array
     $sql = 'INSERT INTO shares (
         uuid, type, title, content, original_filename, stored_filename, mime_type,
         file_size, is_encrypted, encryption_meta, secret_code_hash, iti_secret_code_hash, iti_secret_code, upload_token,
-        expires_at, max_views, upload_quota_bytes, api_key_id
+        expires_at, max_views, upload_quota_bytes, api_key_id,
+        storage_mode, storage_quota_bytes, visitor_quota_bytes, visitor_total_bytes, visitor_lifetime_days, editor_key
     ) VALUES (
         :uuid, :type, :title, :content, :original_filename, :stored_filename, :mime_type,
         :file_size, :is_encrypted, :encryption_meta, :secret_code_hash, :iti_secret_code_hash, :iti_secret_code, :upload_token,
-        :expires_at, :max_views, :upload_quota_bytes, :api_key_id
+        :expires_at, :max_views, :upload_quota_bytes, :api_key_id,
+        :storage_mode, :storage_quota_bytes, :visitor_quota_bytes, :visitor_total_bytes, :visitor_lifetime_days, :editor_key
     )';
 
     $statement = psst_db()->prepare($sql);
@@ -56,6 +58,12 @@ function psst_share_create(array $share): array
         'max_views' => $share['max_views'] ?? null,
         'upload_quota_bytes' => $share['upload_quota_bytes'] ?? null,
         'api_key_id' => $share['api_key_id'] ?? null,
+        'storage_mode' => $share['storage_mode'] ?? null,
+        'storage_quota_bytes' => $share['storage_quota_bytes'] ?? null,
+        'visitor_quota_bytes' => $share['visitor_quota_bytes'] ?? null,
+        'visitor_total_bytes' => $share['visitor_total_bytes'] ?? null,
+        'visitor_lifetime_days' => $share['visitor_lifetime_days'] ?? null,
+        'editor_key' => $share['editor_key'] ?? null,
     ]);
 
     return psst_share_find_by_uuid($share['uuid']);
@@ -80,6 +88,12 @@ function psst_share_update(string $uuid, array $share): ?array
         expires_at = :expires_at,
         max_views = :max_views,
         upload_quota_bytes = :upload_quota_bytes,
+        storage_mode = :storage_mode,
+        storage_quota_bytes = :storage_quota_bytes,
+        visitor_quota_bytes = :visitor_quota_bytes,
+        visitor_total_bytes = :visitor_total_bytes,
+        visitor_lifetime_days = :visitor_lifetime_days,
+        editor_key = :editor_key,
         updated_at = CURRENT_TIMESTAMP
     WHERE uuid = :uuid';
 
@@ -102,6 +116,12 @@ function psst_share_update(string $uuid, array $share): ?array
         'expires_at' => $share['expires_at'] ?? null,
         'max_views' => $share['max_views'] ?? null,
         'upload_quota_bytes' => $share['upload_quota_bytes'] ?? null,
+        'storage_mode' => $share['storage_mode'] ?? null,
+        'storage_quota_bytes' => $share['storage_quota_bytes'] ?? null,
+        'visitor_quota_bytes' => $share['visitor_quota_bytes'] ?? null,
+        'visitor_total_bytes' => $share['visitor_total_bytes'] ?? null,
+        'visitor_lifetime_days' => $share['visitor_lifetime_days'] ?? null,
+        'editor_key' => $share['editor_key'] ?? null,
     ]);
 
     return psst_share_find_by_uuid($uuid);
@@ -374,4 +394,171 @@ function psst_api_key_revoke(int $id): bool
     $statement->execute(['now' => time(), 'id' => $id]);
 
     return $statement->rowCount() === 1;
+}
+
+function psst_setting(string $name): ?string
+{
+    $statement = psst_db()->prepare('SELECT value FROM settings WHERE name = :name');
+    $statement->execute(['name' => $name]);
+    $value = $statement->fetchColumn();
+
+    return $value === false ? null : (string) $value;
+}
+
+function psst_site_item(int $shareId, string $visitorId, string $key): ?array
+{
+    $statement = psst_db()->prepare(
+        'SELECT * FROM site_storage WHERE share_id = :share_id AND visitor_id = :visitor_id AND item_key = :item_key'
+    );
+    $statement->execute(['share_id' => $shareId, 'visitor_id' => $visitorId, 'item_key' => $key]);
+    $item = $statement->fetch();
+
+    return $item ?: null;
+}
+
+function psst_site_items(int $shareId, string $visitorId): array
+{
+    $statement = psst_db()->prepare(
+        'SELECT * FROM site_storage WHERE share_id = :share_id AND visitor_id = :visitor_id ORDER BY item_key'
+    );
+    $statement->execute(['share_id' => $shareId, 'visitor_id' => $visitorId]);
+
+    return $statement->fetchAll();
+}
+
+/**
+ * Inserts or replaces a value; every change raises the version by one.
+ */
+function psst_site_item_put(int $shareId, string $visitorId, string $key, string $json, ?string $ip): int
+{
+    $existing = psst_site_item($shareId, $visitorId, $key);
+    $size = strlen($key) + strlen($json);
+
+    if ($existing) {
+        $statement = psst_db()->prepare(
+            'UPDATE site_storage SET value = :value, version = version + 1, size = :size, updated_at = :now, updated_ip = :ip
+             WHERE id = :id'
+        );
+        $statement->execute(['value' => $json, 'size' => $size, 'now' => time(), 'ip' => $ip, 'id' => $existing['id']]);
+
+        return (int) $existing['version'] + 1;
+    }
+
+    $statement = psst_db()->prepare(
+        'INSERT INTO site_storage (share_id, visitor_id, item_key, value, version, size, updated_at, updated_ip)
+         VALUES (:share_id, :visitor_id, :item_key, :value, 1, :size, :now, :ip)'
+    );
+    $statement->execute([
+        'share_id' => $shareId,
+        'visitor_id' => $visitorId,
+        'item_key' => $key,
+        'value' => $json,
+        'size' => $size,
+        'now' => time(),
+        'ip' => $ip,
+    ]);
+
+    return 1;
+}
+
+function psst_site_item_delete(int $shareId, string $visitorId, string $key): bool
+{
+    $statement = psst_db()->prepare(
+        'DELETE FROM site_storage WHERE share_id = :share_id AND visitor_id = :visitor_id AND item_key = :item_key'
+    );
+    $statement->execute(['share_id' => $shareId, 'visitor_id' => $visitorId, 'item_key' => $key]);
+
+    return $statement->rowCount() > 0;
+}
+
+/**
+ * @return array{bytes: int, keys: int}
+ */
+function psst_site_store_usage(int $shareId, string $visitorId): array
+{
+    $statement = psst_db()->prepare(
+        'SELECT COALESCE(SUM(size), 0), COUNT(*) FROM site_storage WHERE share_id = :share_id AND visitor_id = :visitor_id'
+    );
+    $statement->execute(['share_id' => $shareId, 'visitor_id' => $visitorId]);
+    $row = $statement->fetch(PDO::FETCH_NUM);
+
+    return ['bytes' => (int) $row[0], 'keys' => (int) $row[1]];
+}
+
+/**
+ * @return array{shared_bytes: int, visitor_bytes: int, visitors: int}
+ */
+function psst_site_usage(int $shareId): array
+{
+    $statement = psst_db()->prepare(
+        'SELECT
+            (SELECT COALESCE(SUM(size), 0) FROM site_storage WHERE share_id = :a AND visitor_id = \'\'),
+            (SELECT COALESCE(SUM(size), 0) FROM site_storage WHERE share_id = :b AND visitor_id != \'\'),
+            (SELECT COUNT(*) FROM site_visitors WHERE share_id = :c)'
+    );
+    $statement->execute(['a' => $shareId, 'b' => $shareId, 'c' => $shareId]);
+    $row = $statement->fetch(PDO::FETCH_NUM);
+
+    return ['shared_bytes' => (int) $row[0], 'visitor_bytes' => (int) $row[1], 'visitors' => (int) $row[2]];
+}
+
+function psst_site_visitor_find(int $shareId, string $visitorId): ?array
+{
+    $statement = psst_db()->prepare('SELECT * FROM site_visitors WHERE share_id = :share_id AND visitor_id = :visitor_id');
+    $statement->execute(['share_id' => $shareId, 'visitor_id' => $visitorId]);
+    $visitor = $statement->fetch();
+
+    return $visitor ?: null;
+}
+
+function psst_site_visitor_touch(int $shareId, string $visitorId): void
+{
+    $statement = psst_db()->prepare(
+        'INSERT INTO site_visitors (share_id, visitor_id, first_seen, last_seen) VALUES (:share_id, :visitor_id, :now, :now)
+         ON CONFLICT (share_id, visitor_id) DO UPDATE SET last_seen = excluded.last_seen'
+    );
+    $statement->execute(['share_id' => $shareId, 'visitor_id' => $visitorId, 'now' => time()]);
+}
+
+function psst_site_visitor_list(int $shareId): array
+{
+    $statement = psst_db()->prepare(
+        'SELECT v.visitor_id, v.first_seen, v.last_seen,
+                COALESCE(SUM(s.size), 0) AS size, COUNT(s.id) AS key_count
+         FROM site_visitors v
+         LEFT JOIN site_storage s ON s.share_id = v.share_id AND s.visitor_id = v.visitor_id
+         WHERE v.share_id = :share_id
+         GROUP BY v.visitor_id
+         ORDER BY v.last_seen DESC'
+    );
+    $statement->execute(['share_id' => $shareId]);
+
+    return $statement->fetchAll();
+}
+
+/**
+ * Deletes stored data; with a visitor ID only that visitor's store and record.
+ */
+function psst_site_storage_delete_all(int $shareId, ?string $visitorId = null): void
+{
+    $where = $visitorId === null ? '' : ' AND visitor_id = :visitor_id';
+    $params = $visitorId === null ? ['share_id' => $shareId] : ['share_id' => $shareId, 'visitor_id' => $visitorId];
+
+    psst_db()->prepare('DELETE FROM site_storage WHERE share_id = :share_id' . $where)->execute($params);
+    psst_db()->prepare('DELETE FROM site_visitors WHERE share_id = :share_id' . $where)->execute($params);
+}
+
+/**
+ * Removes visitor stores that were not used since $before.
+ */
+function psst_site_visitors_expire(int $shareId, int $before): void
+{
+    $params = ['share_id' => $shareId, 'before' => $before];
+
+    psst_db()->prepare(
+        'DELETE FROM site_storage WHERE share_id = :share_id AND visitor_id IN (
+            SELECT visitor_id FROM site_visitors WHERE share_id = :share_id AND last_seen < :before
+        )'
+    )->execute($params);
+    psst_db()->prepare('DELETE FROM site_visitors WHERE share_id = :share_id AND last_seen < :before')->execute($params);
 }

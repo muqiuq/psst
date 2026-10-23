@@ -55,6 +55,16 @@ try {
         case 'api_keys':
             psst_api_api_keys();
             break;
+        case 'storage_list':
+        case 'storage_get':
+        case 'storage_set':
+        case 'storage_remove':
+        case 'storage_export':
+        case 'storage_import':
+        case 'storage_clear':
+        case 'visitors':
+            psst_api_site_storage($action);
+            break;
         case 'api_key_create':
             psst_api_api_key_create();
             break;
@@ -79,6 +89,13 @@ function psst_api_status()
         'base_url' => psst_base_url(),
         'max_upload_bytes' => psst_max_upload_bytes(),
         'default_upload_quota_bytes' => (int) psst_config()['default_upload_quota_bytes'] ?: null,
+        'site_defaults' => [
+            'max_site_bytes' => (int) psst_config()['max_site_bytes'],
+            'storage_quota_bytes' => (int) psst_config()['default_site_storage_bytes'] ?: null,
+            'visitor_quota_bytes' => (int) psst_config()['default_visitor_storage_bytes'] ?: null,
+            'visitor_total_bytes' => (int) psst_config()['default_site_visitor_total_bytes'] ?: null,
+            'visitor_lifetime_days' => (int) psst_config()['default_visitor_lifetime_days'],
+        ],
     ]);
 }
 
@@ -172,12 +189,7 @@ function psst_api_update_share()
         psst_json(['error' => 'Share not found.'], 404);
     }
 
-    $share = psst_build_share_payload($existing);
-    $updated = psst_share_update($uuid, $share);
-
-    if ($updated && $existing['stored_filename'] && $existing['stored_filename'] !== $updated['stored_filename']) {
-        psst_stored_file_unlink($existing['stored_filename']);
-    }
+    $updated = psst_share_apply_update($existing, psst_build_share_payload($existing));
 
     psst_json(['share' => psst_manager_share($updated)]);
 }
@@ -288,6 +300,18 @@ function psst_api_api_key_revoke()
     }
 
     psst_json(['revoked' => true]);
+}
+
+function psst_api_site_storage(string $action)
+{
+    psst_require_login();
+
+    $share = psst_share_find_by_uuid(psst_api_uuid());
+    if (!$share) {
+        psst_json(['error' => 'Share not found.'], 404);
+    }
+
+    psst_site_owner_action($action, $share);
 }
 
 function psst_api_uuid(): string

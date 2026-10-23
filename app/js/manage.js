@@ -7,6 +7,9 @@
         qrShare: null,
         maxUploadBytes: 0,
         defaultUploadQuotaBytes: 0,
+        siteDefaults: {},
+        storageShare: null,
+        storageVersion: null,
         filter: '',
         resultShare: null,
     };
@@ -58,6 +61,39 @@
         linkFields: document.getElementById('link-fields'),
         fileFields: document.getElementById('file-fields'),
         uploadFields: document.getElementById('upload-fields'),
+        siteFields: document.getElementById('site-fields'),
+        siteFile: document.getElementById('share-site-file'),
+        siteFileHint: document.getElementById('site-file-hint'),
+        siteHtml: document.getElementById('share-site-html'),
+        siteHtmlDetails: document.getElementById('site-html-details'),
+        storageMode: document.getElementById('share-storage-mode'),
+        storageModeHint: document.getElementById('storage-mode-hint'),
+        storageLimitFields: document.getElementById('storage-limit-fields'),
+        storageQuotaField: document.getElementById('storage-quota-field'),
+        storageQuota: document.getElementById('share-storage-quota'),
+        visitorQuota: document.getElementById('share-visitor-quota'),
+        visitorTotal: document.getElementById('share-visitor-total'),
+        visitorDays: document.getElementById('share-visitor-days'),
+        storageNote: document.getElementById('storage-note'),
+        siteInfo: document.getElementById('site-info'),
+        siteEditorUrl: document.getElementById('site-editor-url'),
+        shareResultEditor: document.getElementById('share-result-editor'),
+        shareResultEditorUrl: document.getElementById('share-result-editor-url'),
+        storageModal: document.getElementById('storage-modal'),
+        storageModalTitle: document.getElementById('storage-modal-title'),
+        storageError: document.getElementById('storage-error'),
+        storageUsage: document.getElementById('storage-usage'),
+        storageStore: document.getElementById('storage-store'),
+        storageRefresh: document.getElementById('storage-refresh'),
+        storageExport: document.getElementById('storage-export'),
+        storageImport: document.getElementById('storage-import'),
+        storageDeleteVisitor: document.getElementById('storage-delete-visitor'),
+        storageClear: document.getElementById('storage-clear'),
+        storageItems: document.getElementById('storage-items'),
+        storageEditor: document.getElementById('storage-editor'),
+        storageKey: document.getElementById('storage-key'),
+        storageValue: document.getElementById('storage-value'),
+        storageEditorNew: document.getElementById('storage-editor-new'),
         uploadToken: document.getElementById('share-upload-token'),
         uploadQuota: document.getElementById('share-upload-quota'),
         uploadInfo: document.getElementById('upload-info'),
@@ -97,6 +133,20 @@
 
     const qrModal = new bootstrap.Modal(elements.qrModal);
     const apiModal = new bootstrap.Modal(elements.apiModal);
+    const storageModal = new bootstrap.Modal(elements.storageModal);
+    const KILOBYTE = 1024;
+    const STORAGE_MODES = {
+        off: 'Storage off',
+        read: 'Read-only storage',
+        shared: 'Shared storage',
+        visitor: 'Per-visitor storage',
+    };
+    const STORAGE_MODE_HINTS = {
+        off: 'The page cannot save anything on the server.',
+        read: 'Visitors can read the data; only the editor link, the manager and the API can change it.',
+        shared: 'All visitors read and change the same data.',
+        visitor: 'Each visitor gets an own store, recognized by a cookie. You see every store in the manager.',
+    };
     const MEGABYTE = 1024 * 1024;
 
     function httpErrorMessage(status, data, rawBody) {
@@ -274,8 +324,10 @@
         const type = elements.type.value;
         const isUpload = type === 'upload';
         const isMarkdown = type === 'markdown';
-        // Drop boxes hold no content, and Markdown is rendered on the server.
-        const canEncrypt = !isUpload && !isMarkdown;
+        const isSite = type === 'site';
+        // Drop boxes hold no content, Markdown is rendered on the server, and sites get
+        // PSST's storage script added.
+        const canEncrypt = !isUpload && !isMarkdown && !isSite;
         const editing = state.editing;
         elements.textFields.classList.toggle('d-none', type !== 'text' && !isMarkdown);
         elements.textLabel.textContent = isMarkdown ? 'Markdown' : 'Text';
@@ -283,12 +335,15 @@
         elements.linkFields.classList.toggle('d-none', type !== 'link');
         elements.fileFields.classList.toggle('d-none', type !== 'file');
         elements.uploadFields.classList.toggle('d-none', !isUpload);
+        elements.siteFields.classList.toggle('d-none', !isSite);
+        updateStorageFields();
         elements.encryptSwitchRow.classList.toggle('d-none', !canEncrypt);
         if (!canEncrypt) {
             elements.encrypted.checked = false;
         }
         elements.passwordFields.classList.toggle('d-none', !canEncrypt || !elements.encrypted.checked);
-        elements.maxViewsField.classList.toggle('d-none', isUpload);
+        // Every reload of a site would count as a view.
+        elements.maxViewsField.classList.toggle('d-none', isUpload || isSite);
         elements.expiryLabel.textContent = isUpload ? 'Accept files until' : 'Expires';
 
         const keepsEncryptedContent = editing && editing.is_encrypted && editing.type === type && elements.encrypted.checked;
@@ -298,13 +353,51 @@
                 : 'Enter new content and a password to replace the encrypted content, or leave both empty to keep it.')
             : 'At least 8 characters. Send it to the recipient separately; the server never sees it.';
 
-        let hint = isUpload
-            ? 'After this time the drop box stops accepting files. Received files are kept.'
-            : 'The share is deleted when it expires or reaches its view limit. A limit of 1 means burn after reading.';
-        if (editing && !isUpload && editing.view_count) {
+        let hint = 'The share is deleted when it expires or reaches its view limit. A limit of 1 means burn after reading.';
+        if (isUpload) {
+            hint = 'After this time the drop box stops accepting files. Received files are kept.';
+        } else if (isSite) {
+            hint = 'The site and all its stored data are deleted when it expires.';
+        }
+        if (editing && !isUpload && !isSite && editing.view_count) {
             hint += ` Opened ${editing.view_count} ${editing.view_count === 1 ? 'time' : 'times'} so far.`;
         }
         elements.limitHint.textContent = hint;
+    }
+
+    function updateStorageFields() {
+        const mode = elements.storageMode.value;
+        elements.storageModeHint.textContent = STORAGE_MODE_HINTS[mode] || '';
+        elements.storageLimitFields.classList.toggle('d-none', mode === 'off');
+        elements.storageNote.classList.toggle('d-none', mode === 'off');
+        elements.storageQuotaField.classList.toggle('d-none', mode === 'visitor');
+        elements.storageLimitFields.querySelectorAll('.visitor-field').forEach((field) => {
+            field.classList.toggle('d-none', mode !== 'visitor');
+        });
+
+        const site = state.editing && state.editing.site;
+        elements.siteInfo.classList.toggle('d-none', !(site && site.editor_url && mode === 'read'));
+        elements.siteEditorUrl.value = site && site.editor_url ? site.editor_url : '';
+    }
+
+    function bytesToUnit(bytes, unit) {
+        return bytes ? String(Math.max(1, Math.round(bytes / unit))) : '';
+    }
+
+    function setSiteFields(site) {
+        const defaults = state.siteDefaults;
+        const source = site || defaults;
+        elements.siteFile.value = '';
+        elements.siteHtml.value = '';
+        elements.siteHtmlDetails.open = false;
+        elements.storageMode.value = site ? site.storage_mode : 'off';
+        elements.storageQuota.value = bytesToUnit(source.storage_quota_bytes, KILOBYTE);
+        elements.visitorQuota.value = bytesToUnit(source.visitor_quota_bytes, KILOBYTE);
+        elements.visitorTotal.value = bytesToUnit(source.visitor_total_bytes, MEGABYTE);
+        elements.visitorDays.value = String(source.visitor_lifetime_days ?? 90);
+        elements.siteFileHint.textContent = site
+            ? `Current page: ${site.file_name || 'index.html'}. Choose a file or paste HTML to replace it; the link and the data stay.`
+            : `One self-contained .html file${defaults.max_site_bytes ? `, up to ${formatBytes(defaults.max_site_bytes)}` : ''}.`;
     }
 
     function updateExpiryCustom() {
@@ -496,6 +589,7 @@
         elements.saveButton.textContent = 'Create share';
         elements.cancelEditButton.classList.add('d-none');
         setPasswordVisible(false);
+        setSiteFields(null);
         setExpiryOptions(null);
         renderUploadInfo(null);
         updateFieldVisibility();
@@ -516,6 +610,15 @@
         } else if (share.requires_secret_code && !isUpload) {
             badges.push(['Server code', 'text-bg-info']);
         }
+        if (share.type === 'site' && share.site) {
+            const site = share.site;
+            badges.push([STORAGE_MODES[site.storage_mode] || 'Storage off', site.storage_mode === 'off' ? 'text-bg-light border' : 'text-bg-success']);
+            if (site.storage_mode === 'visitor') {
+                badges.push([`${site.visitor_count} ${site.visitor_count === 1 ? 'visitor' : 'visitors'} · ${formatBytes(site.visitor_used_bytes)}`, 'text-bg-light border']);
+            } else if (site.storage_mode !== 'off') {
+                badges.push([formatBytes(site.storage_used_bytes), 'text-bg-light border']);
+            }
+        }
         if (isUpload) {
             badges.push(share.upload_token ? ['Token', 'text-bg-light border'] : ['No token', 'text-bg-warning']);
             badges.push([storageText(share), 'text-bg-light border']);
@@ -526,7 +629,9 @@
         if (share.expires_at && !(isUpload && share.upload_closed)) {
             badges.push([`${isUpload ? 'Closes' : 'Expires'} ${relativeTime(share.expires_at)}`, 'text-bg-light border']);
         }
-        if (!isUpload && share.max_views) {
+        if (share.type === 'site') {
+            // Page loads, not views with a limit.
+        } else if (!isUpload && share.max_views) {
             badges.push([`${share.view_count} of ${share.max_views} views`, 'text-bg-warning']);
         } else if (!isUpload && share.view_count) {
             badges.push([`${share.view_count} ${share.view_count === 1 ? 'view' : 'views'}`, 'text-bg-light border']);
@@ -604,6 +709,9 @@
             const actions = row.querySelector('.action-group');
             actions.appendChild(actionButton('Copy', guarded(() => copyText(shareLink))));
             actions.appendChild(actionButton('QR', () => openQr(share)));
+            if (share.type === 'site') {
+                actions.appendChild(actionButton('Storage', guarded(() => openStorage(share))));
+            }
             actions.appendChild(actionButton('Edit', () => editShare(share)));
             actions.appendChild(actionButton('Delete', guarded(() => deleteShare(share)), 'outline-danger'));
 
@@ -642,6 +750,7 @@
         elements.formTitle.textContent = 'Edit share';
         elements.saveButton.textContent = 'Save changes';
         elements.cancelEditButton.classList.remove('d-none');
+        setSiteFields(share.type === 'site' ? share.site : null);
         setExpiryOptions(share);
         renderUploadInfo(share);
         updateFieldVisibility();
@@ -691,9 +800,15 @@
         if (isUpload && share.upload_token) {
             notes.push('The upload token is part of this link.');
         }
+        const editorUrl = share.type === 'site' && share.site && share.site.storage_mode === 'read' ? share.site.editor_url : '';
+        elements.shareResultEditor.classList.toggle('d-none', !editorUrl);
+        elements.shareResultEditorUrl.value = editorUrl || '';
+        if (editorUrl) {
+            notes.push('Keep the editor link to yourself: it can change the stored data.');
+        }
 
         state.resultShare = share;
-        elements.shareResultTitle.textContent = isUpload ? 'Drop box created' : 'Share created';
+        elements.shareResultTitle.textContent = isUpload ? 'Drop box created' : (share.type === 'site' ? 'Site published' : 'Share created');
         elements.shareResultUrl.value = isUpload ? (share.upload_url || share.url) : share.url;
         elements.shareResultNote.textContent = notes.join(' ');
         elements.shareResultNote.classList.toggle('d-none', !notes.length);
@@ -706,17 +821,229 @@
         state.resultShare = null;
     }
 
-    // Like guarded(), but shows the error inside the API dialog, above its backdrop.
-    function guardedInDialog(handler) {
+    // Like guarded(), but shows the error inside a dialog, above its backdrop.
+    function guardedIn(alertBox, handler) {
         return (...args) => {
-            elements.apiError.classList.add('d-none');
+            alertBox.classList.add('d-none');
             return Promise.resolve()
                 .then(() => handler(...args))
                 .catch((error) => {
-                    elements.apiError.textContent = error.message || 'Something went wrong.';
-                    elements.apiError.classList.remove('d-none');
+                    alertBox.className = 'alert alert-danger';
+                    alertBox.textContent = error.message || 'Something went wrong.';
                 });
         };
+    }
+
+    function guardedInDialog(handler) {
+        return guardedIn(elements.apiError, handler);
+    }
+
+    function guardedInStorage(handler) {
+        return guardedIn(elements.storageError, handler);
+    }
+
+    function storageSuccess(message) {
+        elements.storageError.className = 'alert alert-success';
+        elements.storageError.textContent = message;
+    }
+
+    function storageQuery(extra = {}, withVisitor = true) {
+        const params = new URLSearchParams({ uuid: state.storageShare.uuid });
+        if (withVisitor && elements.storageStore.value !== '') {
+            params.set('visitor', elements.storageStore.value);
+        }
+        Object.keys(extra).forEach((name) => params.set(name, extra[name]));
+        return `&${params.toString()}`;
+    }
+
+    function resetStorageEditor() {
+        elements.storageKey.value = '';
+        elements.storageKey.readOnly = false;
+        elements.storageValue.value = '';
+        state.storageVersion = null;
+    }
+
+    async function openStorage(share) {
+        state.storageShare = share;
+        elements.storageModalTitle.textContent = `Storage: ${share.title || (share.site && share.site.file_name) || share.uuid}`;
+        elements.storageError.classList.add('d-none');
+        elements.storageStore.innerHTML = '';
+        elements.storageItems.innerHTML = '';
+        resetStorageEditor();
+        storageModal.show();
+        await loadStorage(null);
+    }
+
+    // Reloads usage, the list of stores and the selected store. selectVisitor: '' for the
+    // shared store, a visitor ID, or null to pick a sensible default.
+    async function loadStorage(selectVisitor) {
+        const query = `&uuid=${encodeURIComponent(state.storageShare.uuid)}`;
+        const [shareData, visitorData] = await Promise.all([api('share', { query }), api('visitors', { query })]);
+        state.storageShare = shareData.share;
+        const site = shareData.share.site;
+        const visitors = visitorData.visitors || [];
+
+        const limit = (bytes) => (bytes ? formatBytes(bytes) : 'no limit');
+        elements.storageUsage.textContent = site.storage_mode === 'visitor'
+            ? `${STORAGE_MODES.visitor}: ${visitors.length} ${visitors.length === 1 ? 'visitor' : 'visitors'}, ${formatBytes(site.visitor_used_bytes)} of ${limit(site.visitor_total_bytes)} used (${limit(site.visitor_quota_bytes)} each).`
+            : `${STORAGE_MODES[site.storage_mode] || 'Storage off'}: ${formatBytes(site.storage_used_bytes)} of ${limit(site.storage_quota_bytes)} used.`;
+
+        const previous = selectVisitor;
+        elements.storageStore.innerHTML = '';
+        const addOption = (value, label) => {
+            const option = document.createElement('option');
+            option.value = value;
+            option.textContent = label;
+            elements.storageStore.appendChild(option);
+        };
+        addOption('', `Shared store · ${formatBytes(site.storage_used_bytes)}${site.storage_mode === 'visitor' ? ' (not used by the page in this mode)' : ''}`);
+        visitors.forEach((visitor) => {
+            addOption(visitor.id, `Visitor ${visitor.id.slice(0, 8)} · last visit ${formatDate(visitor.last_seen)} · ${formatBytes(visitor.size)}`);
+        });
+
+        const ids = visitors.map((visitor) => visitor.id);
+        if (previous !== null && (previous === '' || ids.includes(previous))) {
+            elements.storageStore.value = previous;
+        } else {
+            elements.storageStore.value = site.storage_mode === 'visitor' && ids.length ? ids[0] : '';
+        }
+
+        await loadStorageItems();
+    }
+
+    async function loadStorageItems() {
+        const data = await api('storage_list', { query: storageQuery() });
+        elements.storageDeleteVisitor.classList.toggle('d-none', elements.storageStore.value === '');
+        elements.storageItems.innerHTML = '';
+
+        const items = data.items || [];
+        if (!items.length) {
+            const row = document.createElement('tr');
+            const cell = document.createElement('td');
+            cell.colSpan = 5;
+            cell.className = 'text-muted text-center py-3';
+            cell.textContent = 'This store is empty.';
+            row.appendChild(cell);
+            elements.storageItems.appendChild(row);
+            return;
+        }
+
+        items.forEach((item) => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td><code class="item-key text-break"></code></td>
+                <td class="small item-size"></td>
+                <td class="small item-version"></td>
+                <td class="small text-muted item-changed"></td>
+                <td class="text-end"><div class="action-group"></div></td>
+            `;
+            row.querySelector('.item-key').textContent = item.key;
+            row.querySelector('.item-size').textContent = formatBytes(item.size);
+            row.querySelector('.item-version').textContent = String(item.version);
+            row.querySelector('.item-changed').textContent = formatDate(item.updated_at);
+            const actions = row.querySelector('.action-group');
+            actions.appendChild(actionButton('Edit', guardedInStorage(() => editStorageItem(item.key))));
+            actions.appendChild(actionButton('Delete', guardedInStorage(() => deleteStorageItem(item.key)), 'outline-danger'));
+            elements.storageItems.appendChild(row);
+        });
+    }
+
+    async function editStorageItem(key) {
+        const data = await api('storage_get', { query: storageQuery({ key }) });
+        elements.storageKey.value = key;
+        elements.storageKey.readOnly = true;
+        elements.storageValue.value = JSON.stringify(data.value, null, 2);
+        state.storageVersion = data.version;
+        elements.storageValue.focus();
+    }
+
+    async function saveStorageItem() {
+        const key = elements.storageKey.value.trim();
+        if (key === '') {
+            throw new Error('Enter a key.');
+        }
+
+        let value;
+        try {
+            value = JSON.parse(elements.storageValue.value);
+        } catch (error) {
+            throw new Error('The value is not valid JSON. Text needs quotes, for example "hello".');
+        }
+
+        // With the version, a change made meanwhile by a visitor is not overwritten.
+        const body = { key, value };
+        if (state.storageVersion !== null) {
+            body.version = state.storageVersion;
+        }
+        const result = await api('storage_set', {
+            method: 'POST',
+            query: storageQuery(),
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        state.storageVersion = result.version;
+        elements.storageKey.readOnly = true;
+        await loadStorage(elements.storageStore.value);
+        storageSuccess(`Saved "${key}" (version ${result.version}).`);
+    }
+
+    async function deleteStorageItem(key) {
+        if (!window.confirm(`Delete the key "${key}"?`)) {
+            return;
+        }
+        await api('storage_remove', {
+            method: 'POST',
+            query: storageQuery(),
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key }),
+        });
+        if (elements.storageKey.value === key) {
+            resetStorageEditor();
+        }
+        await loadStorage(elements.storageStore.value);
+    }
+
+    async function exportStorage() {
+        const data = await api('storage_export', { query: storageQuery({}, false) });
+        downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), `site-${state.storageShare.uuid}-storage.json`);
+    }
+
+    async function importStorage(file) {
+        const text = await file.text();
+        try {
+            JSON.parse(text);
+        } catch (error) {
+            throw new Error(`${file.name} is not a JSON file.`);
+        }
+        if (!window.confirm(`Import ${file.name}? Keys with the same name are overwritten; other data stays.`)) {
+            return;
+        }
+        const result = await api('storage_import', {
+            method: 'POST',
+            query: storageQuery({}, false),
+            headers: { 'Content-Type': 'application/json' },
+            body: text,
+        });
+        await loadStorage(elements.storageStore.value);
+        storageSuccess(`Imported ${result.imported} ${result.imported === 1 ? 'value' : 'values'}.`);
+    }
+
+    async function clearStorage(onlyVisitor) {
+        const question = onlyVisitor
+            ? 'Delete this visitor\'s store? The visitor starts empty on the next visit.'
+            : 'Delete all stored data of this site, including every visitor store? This cannot be undone.';
+        if (!window.confirm(question)) {
+            return;
+        }
+        await api('storage_clear', {
+            method: 'POST',
+            query: storageQuery({}, onlyVisitor),
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}',
+        });
+        resetStorageEditor();
+        await loadStorage(onlyVisitor ? '' : null);
+        storageSuccess(onlyVisitor ? 'Visitor store deleted.' : 'All data deleted.');
     }
 
     function renderApiKeys(keys) {
@@ -865,6 +1192,33 @@
         const editing = state.editing;
         const wasEncrypted = Boolean(editing && editing.is_encrypted && editing.type === type);
         appendCommonFields(formData);
+
+        if (type === 'site') {
+            const file = elements.siteFile.files[0];
+            const html = elements.siteHtml.value;
+            if (file) {
+                formData.set('file', file, safeFileName(file));
+            } else if (html.trim() !== '') {
+                formData.set('content', html);
+            } else if (!editing || editing.type !== 'site') {
+                throw new Error('Choose an HTML file or paste the HTML.');
+            }
+
+            const limit = (input, unit, label) => {
+                const value = positiveIntegerValue(input, `${label} must be a whole number.`);
+                return value === '' ? '' : String(value * unit);
+            };
+            const days = elements.visitorDays.value.trim();
+            if (!/^\d+$/.test(days) || Number(days) > 3650) {
+                throw new Error('Remember visitors must be 0 (until the browser closes) to 3650 days.');
+            }
+            formData.set('storage_mode', elements.storageMode.value);
+            formData.set('storage_quota_bytes', limit(elements.storageQuota, KILOBYTE, 'The storage limit'));
+            formData.set('visitor_quota_bytes', limit(elements.visitorQuota, KILOBYTE, 'The limit per visitor'));
+            formData.set('visitor_total_bytes', limit(elements.visitorTotal, MEGABYTE, 'The limit for all visitors'));
+            formData.set('visitor_lifetime_days', days);
+            return formData;
+        }
 
         if (type === 'upload') {
             formData.set('require_token', elements.uploadToken.checked ? '1' : '0');
@@ -1158,6 +1512,7 @@
         elements.type.addEventListener('change', updateFieldVisibility);
         elements.encrypted.addEventListener('change', updateFieldVisibility);
         elements.expiry.addEventListener('change', updateExpiryCustom);
+        elements.storageMode.addEventListener('change', updateStorageFields);
         elements.shareForm.addEventListener('submit', saveShare);
         elements.cancelEditButton.addEventListener('click', resetForm);
         elements.refreshButton.addEventListener('click', guarded(async () => {
@@ -1178,6 +1533,33 @@
         });
         elements.shareResultClose.addEventListener('click', hideShareResult);
         elements.apiButton.addEventListener('click', guardedInDialog(openApiKeys));
+        elements.storageStore.addEventListener('change', guardedInStorage(() => {
+            resetStorageEditor();
+            return loadStorageItems();
+        }));
+        elements.storageRefresh.addEventListener('click', guardedInStorage(() => loadStorage(elements.storageStore.value)));
+        elements.storageExport.addEventListener('click', guardedInStorage(exportStorage));
+        elements.storageImport.addEventListener('change', guardedInStorage(async () => {
+            const file = elements.storageImport.files[0];
+            elements.storageImport.value = '';
+            if (file) {
+                await importStorage(file);
+            }
+        }));
+        elements.storageDeleteVisitor.addEventListener('click', guardedInStorage(() => clearStorage(true)));
+        elements.storageClear.addEventListener('click', guardedInStorage(() => clearStorage(false)));
+        elements.storageEditorNew.addEventListener('click', () => {
+            resetStorageEditor();
+            elements.storageKey.focus();
+        });
+        const submitStorageValue = guardedInStorage(saveStorageItem);
+        elements.storageEditor.addEventListener('submit', (event) => {
+            // Synchronously: the guarded handler runs later, too late to stop the submit.
+            event.preventDefault();
+            submitStorageValue();
+        });
+        // The list in the background shows usage; bring it up to date after editing.
+        elements.storageModal.addEventListener('hidden.bs.modal', guarded(loadShares));
         const submitApiKey = guardedInDialog(createApiKey);
         elements.apiKeyForm.addEventListener('submit', (event) => {
             // Synchronously: the guarded handler runs later, too late to stop the submit.
@@ -1191,8 +1573,8 @@
                 elements.apiNewKeyCopy.textContent = 'Copy';
             }, 1500);
         }));
-        // A key is shown only once; do not leave it in the page after the dialog closes.
-        elements.apiModal.addEventListener('hidden.bs.modal', () => {
+        // A key is shown only once; remove it from the page as soon as the dialog closes.
+        elements.apiModal.addEventListener('hide.bs.modal', () => {
             elements.apiNewKeyToken.value = '';
             elements.apiNewKey.classList.add('d-none');
         });
@@ -1255,6 +1637,7 @@
         const status = await api('status');
         state.maxUploadBytes = Number(status.max_upload_bytes || 0);
         state.defaultUploadQuotaBytes = Number(status.default_upload_quota_bytes || 0);
+        state.siteDefaults = status.site_defaults || {};
         renderUploadLimitHint();
         resetForm();
         if (status.authenticated) {
